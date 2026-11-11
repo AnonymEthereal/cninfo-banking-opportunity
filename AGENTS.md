@@ -38,14 +38,57 @@ Name tests `tests/test_*.py` and functions `test_*`. Use temporary directories a
 
 ## Git & Version Management
 
-This checkout is a Git repository tracking `origin` (`AnonymEthereal/cninfo-banking-opportunity`, branch `main`). All project changes must go through Git; never edit deployment copies by hand.
+Mental model: `commit` is a snapshot, `branch` is a parallel line of work, `remote` is backup/collaboration. "Rolling back" always means "which snapshot do we return to". This checkout tracks `origin` (`AnonymEthereal/cninfo-banking-opportunity`, branch `main`); all project changes must go through Git, and pushes to `main` trigger a Streamlit Community Cloud redeploy.
 
-- Start work with `git status` and `git diff`; confirm the working tree only contains intended changes.
-- Group related edits into one logical change; do not mix refactors, behavior changes, and documentation in a single commit.
+### Daily minimal flow
+
+```powershell
+git status              # what changed
+git diff                # what exactly changed
+git add -A              # stage everything (ignored files stay ignored)
+git commit -m "描述改了什么"
+git push
+```
+
+Commit in small steps: one commit does one thing, so rollback stays precise. After a verified change, report the commit hash and push result to the user.
+
+### Working on optimizations
+
+```powershell
+git pull                       # sync first to avoid conflicts
+git switch -c feature/优化xxx   # isolate the work from main
+# ...edit code...
+git add -A
+git commit -m "优化：把 X 改成 Y"
+git push -u origin feature/优化xxx
+```
+
+Open a Pull Request on GitHub to merge back into `main`, keeping the main branch always usable; discard a failed experiment by deleting its branch. Do not rebase, force-push, or amend already pushed commits unless explicitly asked.
+
+### Rollback by how far things went
+
+1. Changed but not staged/committed: `git restore .`
+2. Staged but not committed: `git restore --staged .` then `git restore .`
+3. Committed but not pushed: `git reset --soft HEAD~1` (keeps changes staged, preferred), `git reset --mixed HEAD~1` (keeps changes in the working tree), or `git reset --hard HEAD~1` (discards commit and changes; dangerous).
+4. Already pushed: `git revert <commit-hash>` to create an inverse commit and preserve history. Never `git reset` + force-push a shared branch; `revert` is the safe option.
+
+### Recovery and remotes
+
+```powershell
+git reflog                 # every HEAD movement, including reset-away commits
+git reset --hard <hash>    # return to that snapshot
+git remote -v              # remote URLs
+git fetch && git pull      # fetch remote updates
+git tag v1.0.0; git push --tags   # version tags for releases
+```
+
+As long as it was committed, `reflog` can almost always recover it. Summary: not committed → `restore`; committed but unpushed → `reset`; already pushed → `revert`; lost track → `reflog`.
+
+### Commit hygiene
+
 - Run `python -m pytest -q` (and offline `python scripts/acceptance.py` when behavior changes) before committing.
-- Stage only intended files with `git add <paths>`; never commit `data/`, `__pycache__/`, `.env`, `.streamlit/secrets.toml`, generated reports, or credentials.
+- Verify with `git status` that `data/`, `__pycache__/`, `.env`, `.streamlit/secrets.toml`, generated reports, and credentials are not staged.
 - Use concise imperative subjects, optionally prefixed with `feat:`, `fix:`, `test:`, `docs:`, or `chore:`. Describe behavior changes, specification references, validation performed, and remaining limitations in the body when non-trivial.
-- After a verified change, commit locally and push to `origin/main` so Streamlit Community Cloud redeploys; report the commit hash and push result to the user. Do not rebase, force-push, or amend already pushed commits unless explicitly asked.
 - PRs should describe behavior changes, relevant specification references, validation performed, and remaining limitations. Include screenshots for UI changes and redact credentials from artifacts.
 
 ## Security & Configuration
