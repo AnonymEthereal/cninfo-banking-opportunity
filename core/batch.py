@@ -1,4 +1,5 @@
 import json
+import traceback
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from time import monotonic
 from .deadline import deadline, remaining
@@ -37,7 +38,8 @@ def analyze_one(announcement, agents, folder, seconds):
                 announcement_title=announcement.title, source_url=announcement.source_url).model_dump())
         return {'status': 'completed', 'items': list({x['opportunity_id']: x for x in items}.values())}
     except Exception as exc:
-        return {'status': 'failed', 'items': [], 'stage': stage, 'error_type': type(exc).__name__, 'code': 'AGENT_TIMEOUT' if isinstance(exc, TimeoutError) else getattr(exc, 'code', 'AGENT_FAILED')}
+        traceback.print_exc()
+        return {'status': 'failed', 'items': [], 'stage': stage, 'error_type': type(exc).__name__, 'error_message': str(exc)[:300], 'code': 'AGENT_TIMEOUT' if isinstance(exc, TimeoutError) else getattr(exc, 'code', 'AGENT_FAILED')}
     finally:
         deadline.reset(token)
 
@@ -66,7 +68,7 @@ def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, 
     def persist():
         items = {o['opportunity_id']: o for r in records.values() for o in r['items']}
         atomic_write_json(folder / 'opportunities.json', {'items': list(items.values())})
-        scan.errors = baseline + [ScanError(scope='analysis', announcement_id=k, code=r['code'], message='公告分析失败；已保存检查点。', details={'stage': r.get('stage', 'agents'), 'error_type': r.get('error_type', 'TimeoutError' if r['code'] == 'TASK_TIMEOUT' else 'Unknown'), 'announcement_budget_seconds': seconds, 'batch_budget_seconds': task_seconds, 'action': '超时可增加预算后重试；其他错误请检查模型配置、服务额度或结构化输出。'}) for k,r in records.items() if r['status']=='failed']
+        scan.errors = baseline + [ScanError(scope='analysis', announcement_id=k, code=r['code'], message='公告分析失败；已保存检查点。', details={'stage': r.get('stage', 'agents'), 'error_type': r.get('error_type', 'TimeoutError' if r['code'] == 'TASK_TIMEOUT' else 'Unknown'), 'error_message': r.get('error_message', ''), 'announcement_budget_seconds': seconds, 'batch_budget_seconds': task_seconds, 'action': '超时可增加预算后重试；其他错误请检查模型配置、服务额度或结构化输出。'}) for k,r in records.items() if r['status']=='failed']
         scan.counts.analysis_failed = sum(r['status']=='failed' for r in records.values())
         scan.counts.opportunities = len(items)
         scan.progress.completed = len(records)
