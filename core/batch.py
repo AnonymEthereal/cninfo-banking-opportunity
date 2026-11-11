@@ -3,6 +3,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from time import monotonic
 from .deadline import deadline, remaining
+from .dedup import dedupe_events, dedupe_opportunities
 from .models import Announcement, EventExtractionResult, OpportunityDraft, MarketingAnalysis, Opportunity, ScanError
 from .storage import atomic_write_json
 
@@ -13,6 +14,7 @@ def analyze_one(announcement, agents, folder, seconds):
         text = __import__('pathlib').Path(announcement.text_path).read_text(encoding='utf-8')
         stage = 'agent_1'
         events = EventExtractionResult.model_validate(agents[0].analyze(announcement, text))
+        events.events = dedupe_events(events.events)
         remaining()
         atomic_write_json(folder / 'agent1.json', events)
         items, drafts, marketing = [], [], []
@@ -36,7 +38,7 @@ def analyze_one(announcement, agents, folder, seconds):
                 announcement_id=announcement.announcement_id, stock_code=announcement.stock_code,
                 company_name=announcement.company_name, publish_date=announcement.publish_date,
                 announcement_title=announcement.title, source_url=announcement.source_url).model_dump())
-        return {'status': 'completed', 'items': list({x['opportunity_id']: x for x in items}.values())}
+        return {'status': 'completed', 'items': dedupe_opportunities(list({x['opportunity_id']: x for x in items}.values()))}
     except Exception as exc:
         traceback.print_exc()
         return {'status': 'failed', 'items': [], 'stage': stage, 'error_type': type(exc).__name__, 'error_message': str(exc)[:300], 'code': 'AGENT_TIMEOUT' if isinstance(exc, TimeoutError) else getattr(exc, 'code', 'AGENT_FAILED')}

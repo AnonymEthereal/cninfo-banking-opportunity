@@ -14,7 +14,7 @@ class LiveEventAgent:
 
     def analyze(self, announcement, text):
         result = self.client.generate_json(
-            f"Extract independent events, or an empty events list if none. Every evidence.text MUST be a verbatim contiguous quote from the source, never paraphrase or combine sentences. Preserve original numbers and punctuation. announcement_id={announcement.announcement_id}\n{text}",
+            f"Extract independent business events, or an empty events list if none. Define one event as one distinct business matter: a transaction, financing, procurement, investment, or reportable fact. The same matter repeated in the title, 重要内容提示, body, or appendix is ONE event; merge its evidence and never output a second event for the same matter, the same transaction, or the same numbers. Set worth_analyzing=false for procedural content that cannot become a banking opportunity (meeting logistics and voting, underwriters' or directors' participation, risk disclaimers, boilerplate). Only mark worth_analyzing=true for procurement, sales, investment/M&A, new financing, value-added, or reporting facts. Every evidence.text MUST be a verbatim contiguous quote from the source, never paraphrase or combine sentences. Preserve original numbers and punctuation. announcement_id={announcement.announcement_id}\n{text}",
             EventExtractionResult)
         result.announcement_id = announcement.announcement_id
         for event in result.events:
@@ -33,7 +33,7 @@ class LiveClassifyAgent:
     def analyze(self, event, text):
         result = self.client.generate_json(
             f"Classify this event into 采购类、销售类、投资并购类、融资新增类、增值类、报告类、其他类. "
-            f"Every evidence.text and amount.original_text must be a verbatim contiguous source quote, not a summary. Preserve punctuation. Use value=null and undisclosed=true if no amount is disclosed. Do not confuse investment, financing and credit limits. {event.model_dump_json()}\n{text}", OpportunityDraft)
+            f"Every evidence.text and amount.original_text must be a verbatim contiguous source quote, not a summary. Preserve punctuation. Use value=null and undisclosed=true if no amount is disclosed. Do not confuse investment, financing and credit limits. Describe only this event in event_summary; do not restate the whole announcement or other events. {event.model_dump_json()}\n{text}", OpportunityDraft)
         if result.category not in {'采购类','销售类','投资并购类','融资新增类','增值类','报告类','其他类'}:
             raise EvidenceError('UNKNOWN_CATEGORY')
         check_evidence(result.evidence, text)
