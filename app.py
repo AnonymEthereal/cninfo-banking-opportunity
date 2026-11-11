@@ -97,7 +97,7 @@ if st.button("检索公告", type="primary", disabled=busy or end < start or not
     scan = None
     try:
         agents = (MockEventAgent(), MockClassifyAgent(), MockMarketingAgent())
-        companies = [Company.parse_obj(item) for item in st.session_state.validation["companies"]]
+        companies = [Company.model_validate(item) for item in st.session_state.validation["companies"]]
         scan = orchestrator().create(companies, DateRange(start_date=start, end_date=end))
         scan.analysis_mode = 'live' if use_live else 'mock'
         scan.require_review = True
@@ -135,7 +135,7 @@ if st.session_state.scan_id:
         keyword = st.text_input("筛选公告标题或企业", key=f'announcement_search_{scan_id}')
         preview = [item for item in announcement_rows if not keyword or keyword.casefold() in (item['title'] + item['company_name']).casefold()]
         if preview:
-            st.dataframe([{'企业': item['company_name'], '标题': item['title'], '日期': str(item['publish_date']), '公告 ID': item['announcement_id'], '原文': item['source_url']} for item in preview], hide_index=True, use_container_width=True, column_config={'原文': st.column_config.LinkColumn('原文')})
+            st.dataframe([{'企业': item['company_name'], '标题': item['title'], '日期': str(item['publish_date']), '公告 ID': item['announcement_id'], '原文': item['source_url']} for item in preview], hide_index=True, width='stretch', column_config={'原文': st.column_config.LinkColumn('原文')})
         else:
             st.info("暂无符合条件的公告。")
     if scan.status == 'awaiting_review':
@@ -240,7 +240,7 @@ if st.session_state.scan_id:
     result_path = Path(orchestrator().root) / "results" / scan_id / "opportunities.json"
     opportunities = []
     if result_path.exists():
-        opportunities = [Opportunity.parse_obj(item) for item in json.loads(result_path.read_text(encoding="utf-8")).get("items", [])]
+        opportunities = [Opportunity.model_validate(item) for item in json.loads(result_path.read_text(encoding="utf-8")).get("items", [])]
     if opportunities:
         categories = sorted({item.category for item in opportunities})
         filters = st.columns(3)
@@ -253,7 +253,7 @@ if st.session_state.scan_id:
         filtered.sort(key=lambda item: (item.publish_date, item.company_name, item.opportunity_id), reverse=True)
         rows = [{"企业": item.company_name, "股票代码": item.stock_code, "日期": str(item.publish_date), "类别": item.category, "事件": item.event_summary, "金额": "未披露" if item.amount.value is None else str(item.amount.value), "币种": item.amount.currency, "金额类型": item.amount.type, "银行产品": "、".join(item.bank_products), "分析状态": item.analysis_status, "公告 ID": item.announcement_id, "来源": item.source_url} for item in filtered]
         st.caption(f"筛选后 {len(rows)} 条，共 {len(opportunities)} 条；下载报告包含完整结果。")
-        st.dataframe(rows, use_container_width=True)
+        st.dataframe(rows, width='stretch')
         detail_choice = st.selectbox("查看商机证据与跟进建议", [item.opportunity_id for item in filtered], format_func=lambda key: next(f"{item.company_name} · {item.category} · {item.event_summary[:45]}" for item in filtered if item.opportunity_id == key)) if filtered else None
         for item in [item for item in filtered if item.opportunity_id == detail_choice]:
             with st.expander(f"{item.company_name} · {item.category} · {item.opportunity_id}"):
@@ -284,7 +284,7 @@ if st.session_state.scan_id:
         st.download_button("下载 HTML", (report_dir / "report.html").read_bytes(), file_name=f"{scan_id}.html")
     if scan.errors:
         st.warning("任务包含异常")
-        st.dataframe([{'错误码': error.code, '范围': error.scope, '公告 ID': error.announcement_id, '说明': error.message, '阶段': error.details.get('stage', ''), '错误类型': error.details.get('error_type', ''), '建议': error.details.get('action', '可从检查点恢复或重试失败项。')} for error in scan.errors], use_container_width=True, hide_index=True)
+        st.dataframe([{'错误码': error.code, '范围': error.scope, '公告 ID': error.announcement_id, '说明': error.message, '阶段': error.details.get('stage', ''), '错误类型': error.details.get('error_type', ''), '建议': error.details.get('action', '可从检查点恢复或重试失败项。')} for error in scan.errors], width='stretch', hide_index=True)
         for index, error in enumerate(scan.errors):
             with st.expander(f"异常 {index + 1} · {error.code}"):
-                st.json(error.dict())
+                st.json(error.model_dump())

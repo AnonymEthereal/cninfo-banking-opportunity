@@ -10,7 +10,7 @@ T = TypeVar("T", bound=BaseModel)
 def atomic_write_json(path: Path, value: BaseModel | dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(value, BaseModel):
-        payload = value.dict()
+        payload = value.model_dump()
     else:
         payload = value
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -19,4 +19,4 @@ def atomic_write_json(path: Path, value: BaseModel | dict) -> None:
 
 
 def read_model(path: Path, model: Type[T]) -> T:
-    return model.parse_raw(path.read_text(encoding="utf-8"))
+    return model.model_validate_json(path.read_text(encoding="utf-8"))

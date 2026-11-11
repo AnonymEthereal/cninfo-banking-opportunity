@@ -55,7 +55,7 @@ def preview_company_import(content: bytes, directory, existing=()) -> dict:
                 if company is None:
                     item["message"] = "当前名录中不存在该代码，请核对或刷新完整名录。"
                 elif name and name.casefold() != company.company_name.casefold():
-                    item.update(status="pending", message="名称与代码不一致，请确认企业身份。", candidates=[company.dict()] + [c.dict() for c in search_companies(name, directory, 10) if c.stock_code != company.stock_code])
+                    item.update(status="pending", message="名称与代码不一致，请确认企业身份。", candidates=[company.model_dump()] + [c.model_dump() for c in search_companies(name, directory, 10) if c.stock_code != company.stock_code])
                     company = None
         elif name:
             exact = [c for c in directory if c.company_name.casefold() == name.casefold()]
@@ -63,11 +63,11 @@ def preview_company_import(content: bytes, directory, existing=()) -> dict:
                 company = exact[0]
             else:
                 matches = search_companies(name, directory, 10)
-                item.update(status="pending" if matches else "error", message="请选择匹配企业。" if matches else "未找到匹配企业，请修改名称。", candidates=[c.dict() for c in matches])
+                item.update(status="pending" if matches else "error", message="请选择匹配企业。" if matches else "未找到匹配企业，请修改名称。", candidates=[c.model_dump() for c in matches])
         else:
             item["message"] = "股票代码和公司名称不能同时为空。"
         if company:
-            item["company"] = company.dict()
+            item["company"] = company.model_dump()
             item["status"] = "duplicate" if company.stock_code in seen else "valid"
             item["message"] = "与文件或已选名单重复，自动跳过。" if item["status"] == "duplicate" else "已匹配名录。"
             seen.add(company.stock_code)

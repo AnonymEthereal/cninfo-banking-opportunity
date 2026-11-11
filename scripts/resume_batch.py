@@ -12,6 +12,6 @@ if __name__ == '__main__':
     future = manager.submit(sys.argv[1], agents, resources=[client])
     try:
         result = future.result()
-        print(result.scan_id, result.status, result.counts.dict(), flush=True)
+        print(result.scan_id, result.status, result.counts.model_dump(), flush=True)
     finally:
         manager.shutdown()

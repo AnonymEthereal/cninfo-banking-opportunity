@@ -14,7 +14,7 @@ def export_xlsx(opportunities, scan, path: Path):
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}1"
     for o in opportunities:
-        d = o.dict(); amount = d["amount"]
+        d = o.model_dump(); amount = d["amount"]
         ws.append([d.get("opportunity_id"), d.get("announcement_id"), d.get("stock_code"), d.get("company_name"), d.get("announcement_title"), str(d.get("publish_date")), d.get("category"), d.get("subcategory"), d.get("event_summary"), amount.get("value"), amount.get("currency"), amount.get("type"), amount.get("undisclosed", False), ", ".join(d.get("bank_products") or []), d.get("marketing_direction"), d.get("suggested_action"), "\n".join(x["text"] for x in d.get("evidence") or []), "\n".join(d.get("pending_verification") or []), d.get("source_url")])
     for row in ws.iter_rows(min_row=2):
         for cell in row: cell.alignment = Alignment(vertical="top", wrap_text=True)

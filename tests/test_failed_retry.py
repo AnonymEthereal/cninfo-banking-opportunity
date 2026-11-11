@@ -11,7 +11,7 @@ def test_retry_failed_only_preserves_success_and_history(tmp_path):
     text = tmp_path / "body.txt"
     text.write_text("body", encoding="utf-8")
     announcements = [Announcement(announcement_id=key, stock_code="000001", company_name="A", title="t", publish_date=date(2026, 1, 1), source_url="https://example.com", text_path=str(text)) for key in ("good", "bad")]
-    atomic_write_json(folder / "announcements.json", {"items": [item.dict() for item in announcements]})
+    atomic_write_json(folder / "announcements.json", {"items": [item.model_dump() for item in announcements]})
     atomic_write_json(folder / "agents/good/result.json", {"status": "completed", "items": []})
     atomic_write_json(folder / "agents/bad/result.json", {"status": "failed", "items": [], "code": "AGENT_FAILED"})
     scan.status = "analyzing"

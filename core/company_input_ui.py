@@ -44,7 +44,7 @@ def render_company_input() -> dict | None:
             choices = state.get(key, [])
             codes = available if all_option in choices else choices
             try:
-                state.selected_companies = merge_companies(state.selected_companies, [by_code[code].dict() for code in codes])
+                state.selected_companies = merge_companies(state.selected_companies, [by_code[code].model_dump() for code in codes])
                 state.pop("picker_error", None)
             except ValueError as exc:
                 state.picker_error = str(exc)
@@ -104,7 +104,7 @@ def render_company_input() -> dict | None:
             state.selected_companies = []
             st.rerun()
         if selected:
-            st.dataframe([{"企业": item["company_name"], "代码": item["stock_code"]} for item in state.selected_companies], hide_index=True, use_container_width=True)
+            st.dataframe([{"企业": item["company_name"], "代码": item["stock_code"]} for item in state.selected_companies], hide_index=True, width='stretch')
         else:
             st.info("从左侧添加第一家企业。添加后可继续搜索、粘贴或导入。")
     if not state.selected_companies:

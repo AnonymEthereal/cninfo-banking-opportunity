@@ -33,7 +33,7 @@ class LiveClassifyAgent:
     def analyze(self, event, text):
         result = self.client.generate_json(
             f"Classify this event into 采购类、销售类、投资并购类、融资新增类、增值类、报告类、其他类. "
-            f"Every evidence.text and amount.original_text must be a verbatim contiguous source quote, not a summary. Preserve punctuation. Use value=null and undisclosed=true if no amount is disclosed. Do not confuse investment, financing and credit limits. {event.json(ensure_ascii=False)}\n{text}", OpportunityDraft)
+            f"Every evidence.text and amount.original_text must be a verbatim contiguous source quote, not a summary. Preserve punctuation. Use value=null and undisclosed=true if no amount is disclosed. Do not confuse investment, financing and credit limits. {event.model_dump_json()}\n{text}", OpportunityDraft)
         if result.category not in {'采购类','销售类','投资并购类','融资新增类','增值类','报告类','其他类'}:
             raise EvidenceError('UNKNOWN_CATEGORY')
         check_evidence(result.evidence, text)
@@ -52,7 +52,7 @@ class LiveMarketingAgent:
         if draft.category not in {'采购类','投资并购类','融资新增类','增值类'}:
             return MarketingAnalysis()
         return self.client.generate_json(
-            f"Suggest potential banking products, actions and verification questions. These are hypotheses, not confirmed client needs. {draft.json(ensure_ascii=False)}\n{text}", MarketingAnalysis)
+            f"Suggest potential banking products, actions and verification questions. These are hypotheses, not confirmed client needs. {draft.model_dump_json()}\n{text}", MarketingAnalysis)
 
 def live_agents():
     values = [os.getenv(name, '').strip() for name in ('LLM_API_KEY','LLM_BASE_URL','LLM_MODEL')]

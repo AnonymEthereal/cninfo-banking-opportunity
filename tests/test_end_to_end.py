@@ -10,8 +10,8 @@ class FixtureCollector:
         return [Announcement(announcement_id="ann-fixture", stock_code=company.stock_code, company_name=company.company_name, title="项目公告", publish_date=date(2026, 11, 6), source_url="https://example/source")]
     def download(self, announcement, destination):
         destination.parent.mkdir(parents=True, exist_ok=True)
-        import fitz
-        with fitz.open() as document:
+        import pymupdf
+        with pymupdf.open() as document:
             page = document.new_page()
             page.insert_text((72, 72), 'Project investment; new production facility.')
             document.save(destination)

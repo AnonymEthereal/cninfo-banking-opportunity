@@ -11,7 +11,7 @@ def analyze_one(announcement, agents, folder, seconds):
     try:
         text = __import__('pathlib').Path(announcement.text_path).read_text(encoding='utf-8')
         stage = 'agent_1'
-        events = EventExtractionResult.parse_obj(agents[0].analyze(announcement, text))
+        events = EventExtractionResult.model_validate(agents[0].analyze(announcement, text))
         remaining()
         atomic_write_json(folder / 'agent1.json', events)
         items, drafts, marketing = [], [], []
@@ -20,21 +20,21 @@ def analyze_one(announcement, agents, folder, seconds):
                 continue
             remaining()
             stage = 'agent_2'
-            draft = OpportunityDraft.parse_obj(agents[1].analyze(event, text))
-            drafts.append(draft.dict())
+            draft = OpportunityDraft.model_validate(agents[1].analyze(event, text))
+            drafts.append(draft.model_dump())
             atomic_write_json(folder / 'agent2.json', {'items': drafts})
             remaining()
             stage = 'agent_3'
-            advice = MarketingAnalysis.parse_obj(agents[2].analyze(draft, text))
+            advice = MarketingAnalysis.model_validate(agents[2].analyze(draft, text))
             remaining()
-            marketing.append(advice.dict())
+            marketing.append(advice.model_dump())
             atomic_write_json(folder / 'agent3.json', {'items': marketing})
-            fields = draft.dict(exclude={'event_id'})
-            fields.update(advice.dict())
+            fields = draft.model_dump(exclude={'event_id'})
+            fields.update(advice.model_dump())
             items.append(Opportunity(**fields, opportunity_id=f'{announcement.announcement_id}_{event.event_id}',
                 announcement_id=announcement.announcement_id, stock_code=announcement.stock_code,
                 company_name=announcement.company_name, publish_date=announcement.publish_date,
-                announcement_title=announcement.title, source_url=announcement.source_url).dict())
+                announcement_title=announcement.title, source_url=announcement.source_url).model_dump())
         return {'status': 'completed', 'items': list({x['opportunity_id']: x for x in items}.values())}
     except Exception as exc:
         return {'status': 'failed', 'items': [], 'stage': stage, 'error_type': type(exc).__name__, 'code': 'AGENT_TIMEOUT' if isinstance(exc, TimeoutError) else getattr(exc, 'code', 'AGENT_FAILED')}
@@ -43,7 +43,7 @@ def analyze_one(announcement, agents, folder, seconds):
 
 def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, retry_failed=False):
     folder = runner.root / 'results' / scan.scan_id
-    announcements = [Announcement.parse_obj(x) for x in json.loads((folder / 'announcements.json').read_text(encoding='utf-8'))['items']]
+    announcements = [Announcement.model_validate(x) for x in json.loads((folder / 'announcements.json').read_text(encoding='utf-8'))['items']]
     records = {}
     pending = []
     for a in announcements:

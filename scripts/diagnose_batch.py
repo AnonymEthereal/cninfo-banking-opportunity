@@ -15,7 +15,7 @@ if __name__ == '__main__':
     client, agents = live_agents()
     try:
         for item in [x for x in items if x['announcement_id'] in failed][:3]:
-            a = Announcement.parse_obj(item)
+            a = Announcement.model_validate(item)
             target = folder/'diagnostics'/a.announcement_id
             result = analyze_one(a, agents, target, 180)
             atomic_write_json(target/'result.json', result)

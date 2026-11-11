@@ -11,7 +11,7 @@ def prepared(tmp_path):
     text = tmp_path/'text.txt'
     text.write_text('source')
     a = Announcement(announcement_id='a',stock_code='000001',company_name='A',title='title',publish_date=date(2025,1,1),source_url='https://example.com',text_path=str(text))
-    atomic_write_json(tmp_path/'results'/scan.scan_id/'announcements.json',{'items':[a.dict()]})
+    atomic_write_json(tmp_path/'results'/scan.scan_id/'announcements.json',{'items':[a.model_dump()]})
     scan.status='analyzing'
     runner._save(scan)
     return runner,scan

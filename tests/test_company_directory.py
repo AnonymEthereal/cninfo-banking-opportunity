@@ -8,7 +8,7 @@ def test_fuzzy_search_and_additive_selection():
     assert search_companies("宁德时带", QUICK_COMPANIES)[0].stock_code == "300750"
     assert all(item.stock_code.startswith("600") for item in search_companies("600", QUICK_COMPANIES))
     first, second = QUICK_COMPANIES[:2]
-    merged = merge_companies([first.dict()], [first.dict(), second.dict()])
+    merged = merge_companies([first.model_dump()], [first.model_dump(), second.model_dump()])
     assert len(merged) == 2
     assert merged[0]["stock_code"] == first.stock_code
 

@@ -34,4 +34,4 @@ def validate_company_file(content: bytes) -> dict:
             companies.append(company)
         except (ValueError, PydanticValidationError) as exc:
             errors.append({"row": row_no, "code": "INVALID_ROW", "message": str(exc)})
-    return {"valid": not errors, "companies": [c.dict() for c in companies], "summary": {"total_rows": len(rows) - 1, "valid_rows": len(companies), "duplicate_rows": duplicate_rows, "error_rows": len(errors) - duplicate_rows}, "errors": errors}
+    return {"valid": not errors, "companies": [c.model_dump() for c in companies], "summary": {"total_rows": len(rows) - 1, "valid_rows": len(companies), "duplicate_rows": duplicate_rows, "error_rows": len(errors) - duplicate_rows}, "errors": errors}

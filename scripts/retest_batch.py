@@ -29,7 +29,7 @@ def retest(root, source_id):
             atomic_write_json(folder/'agents'/aid/'result.json', {'status':'completed','items':[x for x in original if x['announcement_id']==aid]})
         elif not item.get('text_path'):
             try:
-                a = Announcement.parse_obj(item)
+                a = Announcement.model_validate(item)
                 pdf = folder/'documents'/aid/'source.pdf'
                 collector.download(a, pdf)
                 text, pages = parse_pdf(pdf)
@@ -56,8 +56,8 @@ def retest(root, source_id):
             p=folder/'agents'/aid/'result.json'
             result=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {'status':'document_failed'}
             rows.append({'announcement_id':aid,'before':[e.code for e in source.errors if e.announcement_id==aid],'after':result.get('status'),'stage':result.get('stage'),'code':result.get('code')})
-        atomic_write_json(folder/'comparison.json',{'source_scan_id':source_id,'scan_id':scan.scan_id,'counts':final.counts.dict(),'items':rows})
-        print('final',scan.scan_id,final.counts.dict(),flush=True)
+        atomic_write_json(folder/'comparison.json',{'source_scan_id':source_id,'scan_id':scan.scan_id,'counts':final.counts.model_dump(),'items':rows})
+        print('final',scan.scan_id,final.counts.model_dump(),flush=True)
     finally:
         client.close()
         collector.client.close()

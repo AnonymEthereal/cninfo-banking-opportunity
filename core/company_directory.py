@@ -76,7 +76,7 @@ def validate_company_text(text: str, directory: list[Company]) -> dict:
             duplicates += 1
             continue
         seen.add(company.stock_code)
-        companies.append(company.dict())
+        companies.append(company.model_dump())
     if not tokens:
         errors.append({"row": 1, "code": "COMPANIES_REQUIRED", "message": "请至少输入一家企业。"})
     return {"valid": bool(companies) and not errors, "companies": companies, "summary": {"total_rows": len(tokens), "valid_rows": len(companies), "duplicate_rows": duplicates, "error_rows": len(errors)}, "errors": errors}

@@ -47,24 +47,24 @@ class ScanOrchestrator:
             try:
                 checkpoint = checkpoint_dir / f"{company.stock_code}.json"
                 if checkpoint.exists():
-                    items = [Announcement.parse_obj(item) for item in json.loads(checkpoint.read_text(encoding="utf-8"))["items"]]
+                    items = [Announcement.model_validate(item) for item in json.loads(checkpoint.read_text(encoding="utf-8"))["items"]]
                 else:
                     items = self.collector.collect(company, scan.date_range)
-                    atomic_write_json(checkpoint, {"items": [item.dict() for item in items]})
-                announcements.extend(Announcement.parse_obj(prior.get(item.announcement_id, item.dict())) for item in items)
+                    atomic_write_json(checkpoint, {"items": [item.model_dump() for item in items]})
+                announcements.extend(Announcement.model_validate(prior.get(item.announcement_id, item.model_dump())) for item in items)
             except Exception as exc:
                 scan.counts.collection_failed += 1
                 scan.errors.append(ScanError(scope="company", code="COLLECTION_FAILED", message="公告检索失败。", details={"stock_code": company.stock_code, "company_name": company.company_name, "stage": "collecting", "error_type": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None), "action": "检查网络或来源服务后重试采集。"}))
             scan.progress.completed += 1
             unique = {item.announcement_id: item for item in announcements}
             scan.counts.announcements = len(unique)
-            atomic_write_json(folder / "announcements.json", {"items": [item.dict() for item in unique.values()]})
+            atomic_write_json(folder / "announcements.json", {"items": [item.model_dump() for item in unique.values()]})
             scan.updated_at = datetime.now().astimezone()
             self._save(scan)
         unique = {item.announcement_id: item for item in announcements}
         scan.counts.announcements = len(unique)
         scan.progress.stage, scan.updated_at = "collection_completed", datetime.now().astimezone()
-        atomic_write_json(self.root / "results" / scan.scan_id / "announcements.json", {"items": [v.dict() for v in unique.values()]})
+        atomic_write_json(self.root / "results" / scan.scan_id / "announcements.json", {"items": [v.model_dump() for v in unique.values()]})
         self._save(scan)
         return scan
 
@@ -75,7 +75,7 @@ class ScanOrchestrator:
         scan.counts.document_failed = 0
         path = self.root / "results" / scan.scan_id / "announcements.json"
         payload = __import__("json").loads(path.read_text(encoding="utf-8")) if path.exists() else {"items": []}
-        announcements = [Announcement.parse_obj(item) for item in payload.get("items", [])]
+        announcements = [Announcement.model_validate(item) for item in payload.get("items", [])]
         scan.progress.total, scan.progress.completed = len(announcements), 0
         for announcement in announcements:
             try:
@@ -95,7 +95,7 @@ class ScanOrchestrator:
                 announcement.text_path = str(self.root / "announcements" / announcement.announcement_id / "text.txt")
                 Path(announcement.text_path).parent.mkdir(parents=True, exist_ok=True)
                 Path(announcement.text_path).write_text(text, encoding="utf-8")
-                atomic_write_json(self.root / "results" / scan.scan_id / "announcements.json", {"items": [a.dict() if a.announcement_id == announcement.announcement_id else a.dict() for a in announcements]})
+                atomic_write_json(self.root / "results" / scan.scan_id / "announcements.json", {"items": [a.model_dump() if a.announcement_id == announcement.announcement_id else a.model_dump() for a in announcements]})
             except Exception as exc:
                 scan.counts.document_failed += 1
                 scan.errors.append(ScanError(scope="announcement", announcement_id=announcement.announcement_id, code="DOCUMENT_PARSE_FAILED", message="公告正文获取或解析失败。", details={"stage": "documents", "error_type": type(exc).__name__, "title": announcement.title, "action": "查看原文，重试下载解析；扫描件目前不支持 OCR。"}))
@@ -117,9 +117,9 @@ class ScanOrchestrator:
         result_dir = self.root / "results" / scan.scan_id
         import json
         payload = json.loads((result_dir / "opportunities.json").read_text(encoding="utf-8")) if (result_dir / "opportunities.json").exists() else {"items": []}
-        opportunities = [Opportunity.parse_obj(item) for item in payload.get("items", [])]
+        opportunities = [Opportunity.model_validate(item) for item in payload.get("items", [])]
         report_dir = self.root / "reports" / scan.scan_id
-        report_scan = scan.copy(deep=True)
+        report_scan = scan.model_copy(deep=True)
         report_scan.status = ScanStatus.COMPLETED_WITH_ERRORS if scan.errors else ScanStatus.COMPLETED
         export_xlsx(opportunities, report_scan, report_dir / "report.xlsx")
         export_html(opportunities, report_scan, report_dir / "report.html")

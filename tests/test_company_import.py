@@ -25,7 +25,7 @@ def test_import_preview_mixed_rows():
 
 
 def test_import_existing_duplicates_single_column_and_missing_headers():
-    result = preview_company_import(excel([["stock_code"], ["000001"]]), QUICK_COMPANIES, [QUICK_COMPANIES[0].dict()])
+    result = preview_company_import(excel([["stock_code"], ["000001"]]), QUICK_COMPANIES, [QUICK_COMPANIES[0].model_dump()])
     assert result["rows"][0]["status"] == "duplicate"
     result = preview_company_import(excel([["company_name"], ["宁德时代"]]), QUICK_COMPANIES)
     assert result["rows"][0]["company"]["stock_code"] == "300750"

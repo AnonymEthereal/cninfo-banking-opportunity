@@ -18,8 +18,8 @@ class AcceptanceCollector:
 
     def download(self, announcement, destination):
         destination.parent.mkdir(parents=True, exist_ok=True)
-        import fitz
-        with fitz.open() as document:
+        import pymupdf
+        with pymupdf.open() as document:
             page = document.new_page()
             page.insert_text((72, 72), "fixture announcement body")
             document.save(destination)
@@ -43,7 +43,7 @@ def run():
             "html_created": (report_dir / "report.html").exists(),
             "terminal_status": getattr(final.status, "value", final.status) in {"completed", "completed_with_errors"},
         }
-        result = {"scan_id": scan.scan_id, "checks": checks, "passed": all(checks.values()), "status": str(final.status), "counts": final.counts.dict()}
+        result = {"scan_id": scan.scan_id, "checks": checks, "passed": all(checks.values()), "status": str(final.status), "counts": final.counts.model_dump()}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["passed"] else 1
 

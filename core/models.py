@@ -1,14 +1,14 @@
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel, Field, validator, root_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Company(BaseModel):
     stock_code: str
     company_name: str
 
-    @validator("stock_code", pre=True)
+    @field_validator("stock_code", mode="before")
     @classmethod
     def stock_code_valid(cls, value: str) -> str:
         value = str(value).strip().zfill(6)
@@ -16,7 +16,7 @@ class Company(BaseModel):
             raise ValueError("stock_code must be a 6 digit string")
         return value
 
-    @validator("company_name", pre=True)
+    @field_validator("company_name", mode="before")
     @classmethod
     def name_valid(cls, value: str) -> str:
         value = str(value).strip()
@@ -30,12 +30,11 @@ class DateRange(BaseModel):
     end_date: date
     timezone: str = "Asia/Shanghai"
 
-    @root_validator(skip_on_failure=True)
-    def valid_range(cls, values):
-        start, end = values.get("start_date"), values.get("end_date")
-        if start and end and end < start:
+    @model_validator(mode="after")
+    def valid_range(self):
+        if self.end_date < self.start_date:
             raise ValueError("end_date must be on or after start_date")
-        return values
+        return self
 
 
 class ScanStatus(str, Enum):
@@ -88,8 +87,7 @@ class Scan(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class Announcement(BaseModel):
