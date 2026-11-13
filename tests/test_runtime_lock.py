@@ -100,3 +100,36 @@ def test_view_marks_scan_blocked_by_other_task(tmp_path):
     finally:
         lock.release("scan_external")
         manager.shutdown()
+
+
+def test_lock_is_released_when_scan_finishes(tmp_path):
+    runner = ScanOrchestrator(NoopCollector(), tmp_path)
+    manager = TaskManager(runner)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+    )
+    future = manager.submit(scan.scan_id, agents())
+    future.result(timeout=10)
+    lock = RuntimeLock(tmp_path)
+    assert lock.current_active() is None
+    assert lock.path.exists() is False
+    manager.shutdown()
+
+
+def test_run_survives_unreadable_state_file(tmp_path):
+    runner = ScanOrchestrator(NoopCollector(), tmp_path)
+    manager = TaskManager(runner)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+    )
+    folder = tmp_path / "results" / scan.scan_id
+    (folder / "scan.json").write_text("{not json", encoding="utf-8")
+
+    future = manager.submit(scan.scan_id, agents())
+    with pytest.raises(Exception):
+        future.result(timeout=10)
+    # The runtime lock must not stay held after an unreadable checkpoint.
+    assert RuntimeLock(tmp_path).current_active() is None
+    manager.shutdown()

@@ -98,7 +98,11 @@ class TaskManager:
             )
             return self.orchestrator.run_export(scan_id)
         except Exception as exc:
-            scan = self.orchestrator.load(scan_id)
+            try:
+                scan = self.orchestrator.load(scan_id)
+            except Exception:
+                # A corrupt/unreadable state file must not hide the original failure.
+                raise exc
             scan.status = "failed"
             scan.errors.append(
                 ScanError(
@@ -112,7 +116,11 @@ class TaskManager:
                     },
                 )
             )
-            self.orchestrator._save(scan)
+            try:
+                self.orchestrator._save(scan)
+            except Exception:
+                # Persisting the failure is best effort; the lock is still released.
+                pass
             raise
         finally:
             if acquired:

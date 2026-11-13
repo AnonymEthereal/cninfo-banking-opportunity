@@ -10,4 +10,6 @@ python -m streamlit run app.py
 
 上传包含 `stock_code`、`company_name` 两列的 XLSX，查看校验结果后启动扫描。结果保存到 `data/`，页面提供 XLSX 和 HTML 下载。
 
-当前扫描同步执行，尚未实现后台任务与自动轮询。依赖声明使用 Pydantic 2，但现有模型仍有旧版校验器兼容问题；当前验证环境为 Pydantic 1，不代表全新环境安装已经验证。
+扫描在后台线程执行，运行中的任务结果区每 2 秒自动刷新；同一 `data/` 目录只允许一个任务运行。当前版本按内部单实例设计，没有账号体系，历史任务对所有使用者可见。运行、锁与恢复细节见 `OPERATIONS.md`。
+
+依赖使用 Pydantic 2，已通过仓库内 `.venv`（Python 3.11）安装与验证。
