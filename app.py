@@ -1,5 +1,6 @@
 import math
 import os
+from pathlib import Path
 
 import streamlit as st
 
@@ -34,10 +35,37 @@ div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button {
 """, unsafe_allow_html=True)
 
 
-@st.cache_resource
-def app_service() -> AppService:
+@st.cache_resource(show_spinner=False)
+def app_service(fingerprint: tuple) -> AppService:
+    """Build the long-lived application service.
+
+    ``fingerprint`` covers the backend modules. A deploy that only touches
+    ``core/`` still re-runs this script, and without a changing cache key the
+    cached instance would keep classes imported before the update.
+    """
     orchestrator = ScanOrchestrator(CninfoCollector())
     return AppService(orchestrator, TaskManager(orchestrator))
+
+
+def backend_fingerprint() -> tuple:
+    core_dir = Path(__file__).resolve().parent / "core"
+    stamps = []
+    for name in (
+        "app_service.py",
+        "scanner.py",
+        "task_manager.py",
+        "runtime.py",
+        "storage.py",
+        "batch.py",
+        "models.py",
+    ):
+        try:
+            stat = (core_dir / name).stat()
+            stamps.append((name, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            stamps.append((name, 0, 0))
+    return tuple(stamps)
+
 
 
 def set_flash(message: str, kind: str = "success") -> None:
@@ -375,7 +403,15 @@ def live_scan(scan_id: str) -> None:
     render_scan_body(scan_id, auto_refresh=True)
 
 
-service = app_service()
+service = app_service(backend_fingerprint())
+if not hasattr(service.orchestrator, "save"):
+    # The process still holds pre-deploy backend classes. Only a restart fixes
+    # that, so show an actionable message instead of a redacted traceback.
+    st.error("应用刚完成更新，后台模块仍是旧版本。请点击右上角 Manage app → Reboot 重启应用后重试。")
+    if st.button("清除缓存并重试", key="reload_stale_backend"):
+        app_service.clear()
+        st.rerun()
+    st.stop()
 
 
 @st.cache_data(ttl=1, show_spinner=False)

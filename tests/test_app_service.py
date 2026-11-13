@@ -185,3 +185,9 @@ def test_invalid_state_actions_are_rejected(service):
         service.retry_sources(scan.scan_id)
     with pytest.raises(InvalidStateError):
         service.retry_failed_analysis(scan.scan_id)
+
+
+def test_orchestrator_exposes_the_api_used_by_the_service():
+    # Guards against deploying a new app_service against an older scanner.
+    for name in ("save", "run_collection", "prepare_analysis", "run_agents", "run_export"):
+        assert callable(getattr(ScanOrchestrator, name, None)), name
