@@ -90,9 +90,9 @@ def app_service(fingerprint: tuple) -> AppService:
     return AppService(orchestrator, TaskManager(orchestrator))
 
 
+EXPECTED_BACKEND_API = 2
 BACKEND_MODULES = (
-    "core.config",
-    "core.errors",
+    "core.config",    "core.errors",
     "core.models",
     "core.storage",
     "core.runtime",
@@ -144,10 +144,19 @@ def backend_api_ok() -> bool:
 
     Streamlit re-runs ``app.py`` after a deploy but keeps imported modules as
     they were, so the page can call methods the loaded classes do not have.
+    ``API_VERSION`` catches renames and behaviour changes; the signature probes
+    catch parameters added without a version bump.
     """
     try:
-        parameters = inspect.signature(AppService.list_opportunities).parameters
-        return "query" in parameters and hasattr(ScanOrchestrator, "save")
+        if getattr(AppService, "API_VERSION", 0) != EXPECTED_BACKEND_API:
+            return False
+        list_parameters = inspect.signature(AppService.list_opportunities).parameters
+        confirm_parameters = inspect.signature(AppService.confirm_analysis).parameters
+        return (
+            "query" in list_parameters
+            and "mode" in confirm_parameters
+            and hasattr(ScanOrchestrator, "save")
+        )
     except Exception:
         return False
 

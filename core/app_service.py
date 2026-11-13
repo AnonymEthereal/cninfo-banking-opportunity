@@ -36,6 +36,11 @@ class AppService:
     Streamlit layer only renders view models and reacts to capability flags.
     """
 
+    # Bump whenever a public method signature changes. ``app.py`` compares this
+    # with its own expectation so a deploy that leaves stale modules loaded is
+    # detected instead of failing with a TypeError at call time.
+    API_VERSION = 2
+
     def __init__(self, orchestrator: ScanOrchestrator, task_manager: TaskManager | None = None):
         self.orchestrator = orchestrator
         self.task_manager = task_manager or TaskManager(orchestrator)

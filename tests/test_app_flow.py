@@ -254,6 +254,15 @@ def test_app_reloads_stale_backend_modules(tmp_path):
         # Drop the `query` parameter to mimic a class cached by the previous build.
         app_service_module.AppService.list_opportunities = legacy_list_opportunities
 
+        original_confirm = app_service_module.AppService.confirm_analysis
+
+        def legacy_confirm_analysis(self, scan_id, per_minutes=None, batch_hours=None):
+            return original_confirm(self, scan_id, per_minutes, batch_hours)
+
+        # A previous build also lacked the `mode` argument and the version marker.
+        del app_service_module.AppService.API_VERSION
+        app_service_module.AppService.confirm_analysis = legacy_confirm_analysis
+
 
         class OfflineClient:
             def __init__(self, *args, **kwargs):
