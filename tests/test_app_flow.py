@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+import textwrap
 from datetime import date
 from pathlib import Path
 
@@ -158,4 +162,141 @@ def test_app_renders_review_confirmation_controls(tmp_path, monkeypatch):
     assert not app.exception
     assert any(button.label.startswith("确认并开始分析") for button in app.button)
     assert app.get("segmented_control"), "analysis mode selector should render"
+
+
+def test_app_reloads_stale_backend_modules(tmp_path):
+    """A deploy that leaves old ``core`` modules loaded must self-heal.
+
+    Runs in a subprocess: ``importlib.reload`` swaps module classes, which would
+    otherwise leak into the other tests running in this process.
+    """
+    env = dict(os.environ, DATA_DIR=str(tmp_path), PYTHONIOENCODING="utf-8")
+    script = textwrap.dedent(
+        """
+        from datetime import date
+
+        import httpx
+        from streamlit.testing.v1 import AppTest
+
+        from core.models import Announcement, Company, DateRange, Opportunity
+        from core.scanner import ScanOrchestrator
+        from core.storage import atomic_write_json
+
+
+        class NoopCollector:
+            def collect(self, company, date_range):
+                return []
+
+
+        runner = ScanOrchestrator(NoopCollector())
+        scan = runner.create(
+            [Company(stock_code="1", company_name="A")],
+            DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+        )
+        scan.status = "completed"
+        scan.analysis_mode = "mock"
+        scan.counts.announcements = 1
+        scan.counts.opportunities = 1
+        runner.save(scan)
+        folder = runner.root / "results" / scan.scan_id
+        atomic_write_json(
+            folder / "announcements.json",
+            {
+                "items": [
+                    Announcement(
+                        announcement_id="ann-1",
+                        stock_code="000001",
+                        company_name="甲公司",
+                        title="采购项目公告",
+                        publish_date=date(2026, 1, 1),
+                        source_url="https://example.com/ann",
+                    ).model_dump()
+                ]
+            },
+        )
+        atomic_write_json(
+            folder / "opportunities.json",
+            {
+                "items": [
+                    Opportunity(
+                        opportunity_id="opp-1",
+                        announcement_id="ann-1",
+                        stock_code="000001",
+                        company_name="甲公司",
+                        publish_date=date(2026, 1, 1),
+                        announcement_title="采购项目公告",
+                        category="采购类",
+                        event_summary="事件 0",
+                        source_url="https://example.com/ann",
+                        analysis_status="completed",
+                    ).model_dump()
+                ]
+            },
+        )
+
+        import core.app_service as app_service_module
+
+        original = app_service_module.AppService.list_opportunities
+
+        def legacy_list_opportunities(
+            self, scan_id, categories=None, companies=None, statuses=None, limit=None, offset=0
+        ):
+            return original(
+                self,
+                scan_id,
+                categories=categories,
+                companies=companies,
+                statuses=statuses,
+                limit=limit,
+                offset=offset,
+            )
+
+        # Drop the `query` parameter to mimic a class cached by the previous build.
+        app_service_module.AppService.list_opportunities = legacy_list_opportunities
+
+
+        class OfflineClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def close(self):
+                return None
+
+            def get(self, *args, **kwargs):
+                raise RuntimeError("network disabled in tests")
+
+            def post(self, *args, **kwargs):
+                raise RuntimeError("network disabled in tests")
+
+
+        httpx.Client = OfflineClient
+
+        app = AppTest.from_file("app.py", default_timeout=60)
+        app.session_state["scan_id"] = scan.scan_id
+        app.run()
+        assert not app.exception, app.exception
+        assert app.dataframe, "opportunity table should render after reload"
+        assert any(metric.label == "商机" for metric in app.metric)
+        print("RELOAD_OK")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(APP_PATH.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "RELOAD_OK" in result.stdout
+
 

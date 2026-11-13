@@ -1,5 +1,8 @@
+import importlib
+import inspect
 import math
 import os
+import sys
 from pathlib import Path
 
 import streamlit as st
@@ -87,24 +90,102 @@ def app_service(fingerprint: tuple) -> AppService:
     return AppService(orchestrator, TaskManager(orchestrator))
 
 
+BACKEND_MODULES = (
+    "core.config",
+    "core.errors",
+    "core.models",
+    "core.storage",
+    "core.runtime",
+    "core.deadline",
+    "core.dedup",
+    "core.llm_client",
+    "core.calendar",
+    "core.company_directory",
+    "core.company_import",
+    "core.company_import_ui",
+    "core.company_input_ui",
+    "collectors.cninfo",
+    "parsers.document",
+    "exporters.excel_exporter",
+    "exporters.html_exporter",
+    "agents.event_agent",
+    "agents.classify_agent",
+    "agents.marketing_agent",
+    "agents.live",
+    "core.scanner",
+    "core.batch",
+    "core.task_manager",
+    "core.view_models",
+    "core.app_service",
+)
+
+
+@st.cache_resource(show_spinner=False)
+def backend_registry() -> dict:
+    """Marker recording which backend build this process is running."""
+    return {"fingerprint": None}
+
+
 def backend_fingerprint() -> tuple:
-    core_dir = Path(__file__).resolve().parent / "core"
+    root = Path(__file__).resolve().parent
     stamps = []
-    for name in (
-        "app_service.py",
-        "scanner.py",
-        "task_manager.py",
-        "runtime.py",
-        "storage.py",
-        "batch.py",
-        "models.py",
-    ):
+    for name in BACKEND_MODULES:
+        path = root.joinpath(*name.split(".")).with_suffix(".py")
         try:
-            stat = (core_dir / name).stat()
+            stat = path.stat()
             stamps.append((name, stat.st_mtime_ns, stat.st_size))
         except OSError:
             stamps.append((name, 0, 0))
     return tuple(stamps)
+
+
+def backend_api_ok() -> bool:
+    """Return False when the in-memory backend predates this UI.
+
+    Streamlit re-runs ``app.py`` after a deploy but keeps imported modules as
+    they were, so the page can call methods the loaded classes do not have.
+    """
+    try:
+        parameters = inspect.signature(AppService.list_opportunities).parameters
+        return "query" in parameters and hasattr(ScanOrchestrator, "save")
+    except Exception:
+        return False
+
+
+def runtime_is_active() -> bool:
+    try:
+        from core.config import data_dir
+        from core.runtime import RuntimeLock
+
+        return RuntimeLock(data_dir()).current_active() is not None
+    except Exception:
+        return False
+
+
+def reload_backend() -> None:
+    """Reload backend modules in dependency order, then rebind the UI names."""
+    global AppService, CninfoCollector, ScanOrchestrator, TaskManager, DomainError
+    global Company, DateRange, ScanStatus, default_date_range, render_company_input
+
+    for name in BACKEND_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            importlib.import_module(name)
+            continue
+        importlib.reload(module)
+
+    AppService = sys.modules["core.app_service"].AppService
+    CninfoCollector = sys.modules["collectors.cninfo"].CninfoCollector
+    ScanOrchestrator = sys.modules["core.scanner"].ScanOrchestrator
+    TaskManager = sys.modules["core.task_manager"].TaskManager
+    DomainError = sys.modules["core.errors"].DomainError
+    Company = sys.modules["core.models"].Company
+    DateRange = sys.modules["core.models"].DateRange
+    ScanStatus = sys.modules["core.models"].ScanStatus
+    default_date_range = sys.modules["core.calendar"].default_date_range
+    render_company_input = sys.modules["core.company_input_ui"].render_company_input
+    st.cache_data.clear()
+    app_service.clear()
 
 
 def status_value(scan) -> str:
@@ -596,10 +677,28 @@ def live_scan(scan_id: str) -> None:
     render_scan_body(scan_id, auto_refresh=True)
 
 
-service = app_service(backend_fingerprint())
-if not hasattr(service.orchestrator, "save"):
-    # The process still holds pre-deploy backend classes. Only a restart fixes
-    # that, so show an actionable message instead of a redacted traceback.
+registry = backend_registry()
+current_fingerprint = backend_fingerprint()
+previous_fingerprint = registry["fingerprint"]
+registry["fingerprint"] = current_fingerprint
+stale = not backend_api_ok() or (
+    previous_fingerprint is not None and previous_fingerprint != current_fingerprint
+)
+if stale:
+    if runtime_is_active():
+        st.error(
+            "应用已更新，但有扫描任务正在后台运行。任务会继续执行并保存结果；"
+            "请等待任务结束后点击右上角 Manage app → Reboot 重启应用。"
+        )
+        st.stop()
+    try:
+        reload_backend()
+    except Exception:
+        pass
+
+service = app_service(current_fingerprint)
+if not backend_api_ok():
+    # Reload did not take effect; only a process restart clears stale classes.
     st.error("应用刚完成更新，后台模块仍是旧版本。请点击右上角 Manage app → Reboot 重启应用后重试。")
     if st.button("清除缓存并重试", key="reload_stale_backend"):
         app_service.clear()
