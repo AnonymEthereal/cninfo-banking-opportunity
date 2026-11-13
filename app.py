@@ -38,8 +38,10 @@ div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button {
 """, unsafe_allow_html=True)
 
 MODE_LABELS = {"mock": "演示模式", "live": "真实模型分析", "unknown": "模式未知"}
+REVIEW_MODE_LABELS = {"mock": "演示模式（仅验证流程）", "live": "真实模型分析"}
+SHORT_MODE_LABELS = {"mock": "演示模式", "live": "真实模型"}
 MODE_HELP = {
-    "mock": "演示模式只验证流程：Mock Agent 不识别真实商机，报告为空属正常。",
+    "mock": "演示模式只验证流程：Mock Agent 不识别真实商机，报告为空属正常，不能用于业务判断。",
     "live": "真实模型分析会把公告正文发送到已配置的模型服务，并产生调用费用。",
 }
 STATUS_LABELS = {
@@ -90,7 +92,7 @@ def app_service(fingerprint: tuple) -> AppService:
     return AppService(orchestrator, TaskManager(orchestrator))
 
 
-EXPECTED_BACKEND_API = 2
+EXPECTED_BACKEND_API = 3
 BACKEND_MODULES = (
     "core.config",    "core.errors",
     "core.models",
@@ -602,19 +604,19 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
         render_retry_actions(scan_id, scan, view)
         with st.container(border=True):
             st.markdown("#### 确认分析")
-            mode_options = ["mock", "live"] if configured else ["mock"]
-            default_mode = scan.analysis_mode if scan.analysis_mode in mode_options else "mock"
+            mode_options = ["live", "mock"] if configured else ["mock"]
+            default_mode = scan.analysis_mode if scan.analysis_mode in mode_options else mode_options[0]
             mode = st.segmented_control(
                 "分析方式",
                 mode_options,
                 default=default_mode,
-                format_func=lambda value: MODE_LABELS[value],
+                format_func=lambda value: REVIEW_MODE_LABELS[value],
                 key=f"review_mode_{scan_id}",
                 required=True,
             )
             if not configured:
                 st.caption("未配置 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL，当前只能使用演示模式。")
-            st.caption(MODE_HELP.get(mode or "mock"))
+            st.caption(MODE_HELP.get(mode or default_mode))
             per_minutes, batch_hours = render_budget_inputs(
                 scan_id, scan, allow_save=False, expanded=False
             )
@@ -659,11 +661,48 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
 
     if status in TERMINAL:
         render_reports(scan_id, view)
+        render_reanalysis(scan_id, scan, view)
 
     render_errors(scan)
 
     if auto_refresh and not view.capabilities.is_running:
         st.rerun(scope="app")
+
+
+def render_reanalysis(scan_id: str, scan, view) -> None:
+    if not view.capabilities.can_reanalyze:
+        return
+    with st.container(border=True):
+        st.markdown("#### 重新分析")
+        st.caption(
+            "复用这次已检索到的公告和已解析的正文，不重新采集、不重新下载，"
+            "只重跑三阶段分析与报告。旧的分析结果和报告会归档到该任务的 history。"
+        )
+        mode_options = ["live", "mock"] if configured else ["mock"]
+        default_mode = "live" if "live" in mode_options else "mock"
+        choice = st.segmented_control(
+            "分析方式",
+            mode_options,
+            default=default_mode,
+            format_func=lambda value: REVIEW_MODE_LABELS[value],
+            key=f"reanalyze_mode_{scan_id}",
+            required=True,
+        )
+        if scan.analysis_mode == "mock" and not configured:
+            st.caption("配置 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 后，可在这里改用真实模型重跑，无需重新检索。")
+        st.caption(MODE_HELP.get(choice or default_mode))
+        label = SHORT_MODE_LABELS.get(choice or default_mode, choice or default_mode)
+        if st.button(
+            f"重新分析（{label}）",
+            key=f"reanalyze_{scan_id}",
+            width="stretch",
+        ):
+            try:
+                service.reanalyze(scan_id, mode=choice)
+                set_flash("已开始重新分析，结果区会自动刷新。")
+                st.rerun(scope="app")
+            except DomainError as exc:
+                st.error(f"{exc.message}（{exc.code}）")
 
 
 def render_scan_section(scan_id: str) -> None:
@@ -759,6 +798,28 @@ def cached_report(scan_id: str, fmt: str, stamp: tuple[int, int]):
     return service.get_report_bytes(scan_id, fmt)
 
 
+def load_secret_env() -> None:
+    """Expose Streamlit secrets as env vars for the backend, which reads os.environ.
+
+    Local runs use ``.env``; Streamlit Cloud keeps credentials in secrets so no
+    key ever needs to be committed to the repository.
+    """
+    try:
+        secrets = st.secrets
+    except Exception:
+        return
+    for key in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"):
+        if os.getenv(key, "").strip():
+            continue
+        try:
+            value = secrets[key]
+        except Exception:
+            continue
+        if value:
+            os.environ[key] = str(value)
+
+
+load_secret_env()
 configured = all(os.getenv(key, "").strip() for key in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"))
 
 if "scan_id" not in st.session_state:
@@ -809,19 +870,13 @@ with scope_left:
     start = st.date_input("开始日期", default_range.start_date)
     end = st.date_input("结束日期", default_range.end_date)
 with scope_right:
-    mode_options = ["mock", "live"] if configured else ["mock"]
-    selected_mode = st.segmented_control(
-        "分析方式",
-        mode_options,
-        default=st.session_state.get("scan_mode_choice", "mock"),
-        format_func=lambda value: MODE_LABELS[value],
-        key="scan_mode_choice",
-        required=True,
-        label_visibility="collapsed",
-    )
-    if not configured:
-        st.caption("未配置 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL，只能使用演示模式。")
-    st.caption(MODE_HELP.get(selected_mode or "mock"))
+    default_mode = "live" if configured else "mock"
+    st.markdown("**检索与分析分两步**")
+    st.caption("① 检索公告清单（不调用模型、不产生费用）；② 核对公告后再选择分析方式并确认。")
+    if configured:
+        st.caption("模型配置已就绪，确认分析时默认使用真实模型，也可以改为演示模式。")
+    else:
+        st.caption("未配置 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL；确认分析时只能使用演示模式。")
 
 company_count = len(validation["companies"]) if validation else 0
 scan_id = st.session_state.scan_id
@@ -838,8 +893,8 @@ if scan_id:
 runtime = service.get_runtime_state()
 busy = runtime.active or bool(view and view.capabilities.is_running)
 st.caption(
-    f"已选 {company_count} 家企业 · {start} 至 {end} · "
-    f"{MODE_LABELS.get(selected_mode or 'mock')}。仅对成功解析的公告调用分析。"
+    f"已选 {company_count} 家企业 · {start} 至 {end}。"
+    "检索只获取公告清单；分析方式在下一步确认时决定。"
 )
 if end < start:
     st.error("结束日期不能早于开始日期。")
@@ -850,14 +905,14 @@ elif runtime.stale:
 if busy:
     st.info("当前任务尚未结束，请先查看或恢复当前任务，避免重复提交。")
 
-can_start = bool(validation and validation["valid"]) and end >= start and selected_mode and not busy
-if st.button("检索公告", type="primary", disabled=not can_start, help=None if can_start else "请先建立名单、确认日期范围并选择分析方式。"):
+can_start = bool(validation and validation["valid"]) and end >= start and not busy
+if st.button("检索公告", type="primary", disabled=not can_start, help=None if can_start else "请先建立名单并确认日期范围。"):
     try:
         companies = [Company.model_validate(item) for item in validation["companies"]]
         started = service.start_scan(
             companies,
             DateRange(start_date=start, end_date=end),
-            selected_mode,
+            default_mode,
         )
         st.session_state.scan_id = started.scan.scan_id
         st.session_state["_history_picker_target"] = started.scan.scan_id

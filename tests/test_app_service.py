@@ -1,4 +1,5 @@
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,11 @@ from core.task_manager import TaskManager
 
 
 class OneAnnouncementCollector:
+    def __init__(self):
+        self.collect_calls = 0
+
     def collect(self, company, period):
+        self.collect_calls += 1
         return [
             Announcement(
                 announcement_id="ann-1",
@@ -156,6 +161,57 @@ def test_confirm_analysis_can_set_mode_for_legacy_scan(service):
     service.confirm_analysis(scan.scan_id, mode="mock")
     wait_for(service, scan.scan_id)
     assert service.get_scan_view(scan.scan_id).scan.analysis_mode == "mock"
+
+
+def test_reanalyze_reuses_announcements_and_archives_old_results(service, tmp_path):
+    view = service.start_scan(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+        "mock",
+    )
+    scan_id = view.scan.scan_id
+    wait_for(service, scan_id)
+    service.confirm_analysis(scan_id)
+    wait_for(service, scan_id)
+
+    completed = service.get_scan_view(scan_id)
+    assert completed.scan.status == "completed"
+    assert completed.capabilities.can_reanalyze is True
+
+    folder = tmp_path / "results" / scan_id
+    announcement = service.list_announcements(scan_id).items[0]
+    text_file = Path(announcement.text_path)
+    assert text_file.exists()
+    assert (folder / "agents" / "ann-1" / "result.json").exists()
+
+    service.reanalyze(scan_id, mode="mock")
+    assert service.get_scan_view(scan_id).scan.status == "analyzing"
+    wait_for(service, scan_id)
+
+    after = service.get_scan_view(scan_id)
+    assert after.scan.status == "completed"
+    assert after.scan.analysis_mode == "mock"
+    # Collection and document parsing are not repeated.
+    assert service.orchestrator.collector.collect_calls == 1
+    assert text_file.exists()
+
+    archives = list((folder / "history").iterdir())
+    assert len(archives) == 1
+    assert (archives[0] / "opportunities.json").exists()
+    assert (archives[0] / "agents" / "ann-1" / "result.json").exists()
+
+
+def test_reanalyze_rejects_unfinished_scans(service):
+    view = service.start_scan(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+        "mock",
+    )
+    wait_for(service, view.scan.scan_id)
+
+    with pytest.raises(InvalidStateError) as exc:
+        service.reanalyze(view.scan.scan_id)
+    assert exc.value.code == "SCAN_NOT_FINISHED"
 
 
 def test_corrupt_scan_and_missing_report_are_visible(service):

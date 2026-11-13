@@ -33,6 +33,8 @@ def test_app_renders_without_network_directory(tmp_path, monkeypatch):
     app.run()
     assert not app.exception
     assert any(button.label == "检索公告" for button in app.button)
+    # The analysis mode is chosen after collection, not before it.
+    assert not app.get("segmented_control")
 
 
 def test_app_renders_completed_scan_and_reports(tmp_path, monkeypatch):
@@ -147,6 +149,7 @@ def test_app_renders_opportunity_browser(tmp_path, monkeypatch):
     assert app.dataframe, "opportunity table should render"
     assert len(app.selectbox) >= 2, "category and status filters should render"
     assert any(metric.label == "商机" for metric in app.metric)
+    assert any(button.label.startswith("重新分析") for button in app.button)
 
 
 def test_app_renders_review_confirmation_controls(tmp_path, monkeypatch):

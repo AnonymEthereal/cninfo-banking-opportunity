@@ -15,6 +15,7 @@ class ScanCapabilities(BaseModel):
     can_retry_sources: bool = False
     can_retry_failed: bool = False
     can_resume: bool = False
+    can_reanalyze: bool = False
     can_download: bool = False
 
 

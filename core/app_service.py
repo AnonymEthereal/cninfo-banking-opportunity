@@ -1,6 +1,8 @@
 import json
 import re
+import shutil
 from pathlib import Path
+from uuid import uuid4
 
 from .errors import InvalidStateError, NotFoundError, ServiceError
 from .models import Announcement, Company, DateRange, Opportunity, Scan, ScanError, ScanStatus
@@ -39,7 +41,7 @@ class AppService:
     # Bump whenever a public method signature changes. ``app.py`` compares this
     # with its own expectation so a deploy that leaves stale modules loaded is
     # detected instead of failing with a TypeError at call time.
-    API_VERSION = 2
+    API_VERSION = 3
 
     def __init__(self, orchestrator: ScanOrchestrator, task_manager: TaskManager | None = None):
         self.orchestrator = orchestrator
@@ -142,6 +144,12 @@ class AppService:
             and not blocked
             and mode_known
         )
+        can_reanalyze = (
+            scan.status in TERMINAL_STATUSES
+            and scan.counts.announcements > 0
+            and not running
+            and not blocked
+        )
         can_download = scan.status in TERMINAL_STATUSES and any(reports.values())
         return ScanView(
             scan=scan,
@@ -153,6 +161,7 @@ class AppService:
                 can_retry_sources=can_retry_sources,
                 can_retry_failed=can_retry_failed,
                 can_resume=can_resume,
+                can_reanalyze=can_reanalyze,
                 can_download=can_download,
             ),
             announcements_total=announcements_total,
@@ -239,6 +248,51 @@ class AppService:
         if scan.analysis_mode not in KNOWN_MODES:
             raise ServiceError("ANALYSIS_MODE_UNKNOWN", "重试前请先选择原任务使用的分析模式。")
         self._submit_scan(scan, retry_failed=True)
+        return self.get_scan_view(scan_id)
+
+    def reanalyze(self, scan_id: str, mode: str | None = None) -> ScanView:
+        """Re-run analysis on an existing scan without collecting again.
+
+        Collected announcements and parsed document text are reused, so switching
+        between demo and live analysis costs only the model calls. The previous
+        analysis checkpoints and reports are archived first, otherwise the new
+        mode would silently reuse results produced by the old one.
+        """
+        scan = self.load_scan(scan_id)
+        if self.task_manager.is_running(scan_id):
+            raise InvalidStateError("SCAN_RUNNING", "任务运行中，无法重新分析。")
+        active = self.task_manager.active_scan_id()
+        if active and active != scan_id:
+            raise InvalidStateError("ANOTHER_SCAN_RUNNING", "另一个任务正在运行，请等待其结束后再重新分析。")
+        target = scan.analysis_mode if mode is None else mode
+        if target not in KNOWN_MODES:
+            raise ServiceError("INVALID_ANALYSIS_MODE", "分析模式必须是 mock 或 live。")
+        if scan.status not in TERMINAL_STATUSES:
+            raise InvalidStateError("SCAN_NOT_FINISHED", "只有已完成的任务可以重新分析。")
+        if scan.counts.announcements <= 0:
+            raise ServiceError("NO_ANNOUNCEMENTS", "该任务没有可复用的公告。")
+
+        previous_status = scan.status
+        self._archive_analysis(scan_id)
+        scan = self.load_scan(scan_id)
+        scan.analysis_mode = target
+        scan.analysis_confirmed = True
+        scan.status = ScanStatus.ANALYZING.value
+        scan.progress.stage = "documents"
+        scan.progress.completed = 0
+        scan.progress.total = scan.counts.announcements
+        scan.counts.opportunities = 0
+        scan.counts.analysis_failed = 0
+        scan.errors = [error for error in scan.errors if error.scope != "analysis"]
+        self.orchestrator.save(scan)
+        try:
+            self._submit_scan(scan)
+        except DomainError:
+            # Keep the page honest if the new run cannot start at all.
+            failed = self.load_scan(scan_id)
+            failed.status = previous_status
+            self.orchestrator.save(failed)
+            raise
         return self.get_scan_view(scan_id)
 
     # ------------------------------------------------------------------
@@ -410,6 +464,26 @@ class AppService:
     def _opportunities(self, scan_id: str) -> list[Opportunity]:
         items = self._read_items(self._scan_dir(scan_id) / "opportunities.json", Opportunity)
         return list({item.opportunity_id: item for item in items}.values())
+
+    def _archive_analysis(self, scan_id: str) -> None:
+        """Move previous analysis checkpoints aside before switching modes.
+
+        ``announcements.json`` and parsed text stay in place: those are the
+        expensive, mode-independent artefacts worth reusing.
+        """
+        folder = self._scan_dir(scan_id)
+        archive = folder / "history" / uuid4().hex
+        archive.mkdir(parents=True, exist_ok=True)
+        for name in ("scan.json", "opportunities.json"):
+            source = folder / name
+            if source.exists():
+                shutil.copy2(source, archive / name)
+        agents = folder / "agents"
+        if agents.exists():
+            shutil.move(str(agents), str(archive / "agents"))
+        reports = Path(self.orchestrator.root) / "reports" / scan_id
+        if reports.exists():
+            shutil.copytree(reports, archive / "reports", dirs_exist_ok=True)
 
     @staticmethod
     def _slice(items: list, limit: int | None, offset: int) -> list:
