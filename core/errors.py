@@ -6,3 +6,15 @@ class DomainError(Exception):
 
 class ValidationError(DomainError):
     pass
+
+
+class ServiceError(DomainError):
+    """Application-service failure with a stable code for the UI."""
+
+
+class NotFoundError(ServiceError):
+    pass
+
+
+class InvalidStateError(ServiceError):
+    pass

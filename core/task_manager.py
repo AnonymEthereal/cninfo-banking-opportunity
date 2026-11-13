@@ -13,8 +13,10 @@ class TaskManager:
 
     def submit(self, scan_id: str, agents, resources=None, retry_failed=False, retry_sources=False):
         with self.lock:
-            if scan_id in self.futures and not self.futures[scan_id].done():
-                return self.futures[scan_id]
+            existing = self.futures.get(scan_id)
+            if existing is not None and not existing.done():
+                self._close_resources(resources or [])
+                return existing
             future = self.executor.submit(self._run, scan_id, agents, resources or [], retry_failed, retry_sources)
             future.add_done_callback(lambda done: self._close_resources(resources or []))
             self.futures[scan_id] = future
@@ -88,6 +90,15 @@ class TaskManager:
 
     def status(self, scan_id: str):
         return self.orchestrator.load(scan_id)
+
+    def is_running(self, scan_id: str) -> bool:
+        with self.lock:
+            future = self.futures.get(scan_id)
+            return future is not None and not future.done()
+
+    def running_scan_ids(self) -> list[str]:
+        with self.lock:
+            return [scan_id for scan_id, future in self.futures.items() if not future.done()]
 
     def shutdown(self):
         self.executor.shutdown(wait=False, cancel_futures=True)

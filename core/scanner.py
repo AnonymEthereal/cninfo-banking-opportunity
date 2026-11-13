@@ -129,6 +129,10 @@ class ScanOrchestrator:
         self._save(scan)
         return scan
 
-    def _save(self, scan: Scan):
+    def save(self, scan: Scan) -> None:
+        """Public persistence boundary used by the application service."""
         scan.updated_at = datetime.now().astimezone()
         atomic_write_json(self.root / "results" / scan.scan_id / "scan.json", scan)
+
+    def _save(self, scan: Scan):
+        self.save(scan)
