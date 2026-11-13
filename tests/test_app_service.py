@@ -136,8 +136,26 @@ def test_announcement_and_opportunity_queries(service):
     assert result.companies == ["乙公司", "甲公司"]
     assert service.list_opportunities(scan.scan_id, categories=["采购类"]).total == 1
     assert service.list_opportunities(scan.scan_id, statuses=["partial"]).total == 1
+    assert service.list_opportunities(scan.scan_id, query="乙公司").total == 1
+    assert service.list_opportunities(scan.scan_id, query="事件").total == 2
+    assert service.list_opportunities(scan.scan_id, query="不存在").total == 0
     assert service.list_opportunities(scan.scan_id, limit=1).total == 2
     assert len(service.list_opportunities(scan.scan_id, limit=1).items) == 1
+
+
+def test_confirm_analysis_can_set_mode_for_legacy_scan(service):
+    scan = service.orchestrator.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+    )
+    scan.status = "awaiting_review"
+    scan.analysis_mode = "unknown"
+    scan.counts.announcements = 1
+    service.orchestrator.save(scan)
+
+    service.confirm_analysis(scan.scan_id, mode="mock")
+    wait_for(service, scan.scan_id)
+    assert service.get_scan_view(scan.scan_id).scan.analysis_mode == "mock"
 
 
 def test_corrupt_scan_and_missing_report_are_visible(service):

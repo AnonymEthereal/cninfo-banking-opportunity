@@ -181,10 +181,15 @@ class AppService:
         scan_id: str,
         per_minutes: int | None = None,
         batch_hours: int | None = None,
+        mode: str | None = None,
     ) -> ScanView:
         scan = self.load_scan(scan_id)
         if scan.status != REVIEW_STATUS:
             raise InvalidStateError("SCAN_NOT_AWAITING_REVIEW", "当前任务不在等待确认阶段。")
+        if mode is not None:
+            if mode not in KNOWN_MODES:
+                raise ServiceError("INVALID_ANALYSIS_MODE", "分析模式必须是 mock 或 live。")
+            scan.analysis_mode = mode
         if scan.analysis_mode not in KNOWN_MODES:
             raise ServiceError("ANALYSIS_MODE_UNKNOWN", "恢复前请先选择原任务使用的分析模式。")
         if scan.counts.announcements <= 0:
@@ -300,6 +305,7 @@ class AppService:
         statuses: list[str] | None = None,
         limit: int | None = None,
         offset: int = 0,
+        query: str = "",
     ) -> OpportunityPage:
         items = self._opportunities(scan_id)
         facets = {
@@ -307,6 +313,17 @@ class AppService:
             "companies": sorted({item.company_name for item in items}),
             "statuses": sorted({item.analysis_status for item in items}),
         }
+        keyword = query.strip().casefold()
+        if keyword:
+            items = [
+                item
+                for item in items
+                if keyword
+                in (
+                    f"{item.company_name}{item.stock_code}{item.category}"
+                    f"{item.event_summary}{item.announcement_title}"
+                ).casefold()
+            ]
         if categories is not None:
             items = [item for item in items if item.category in categories]
         if companies is not None:
