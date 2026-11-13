@@ -4,12 +4,14 @@ from pathlib import Path
 
 from .errors import InvalidStateError, NotFoundError, ServiceError
 from .models import Announcement, Company, DateRange, Opportunity, Scan, ScanError, ScanStatus
+from .runtime import RuntimeLock
 from .scanner import ScanOrchestrator
 from .storage import read_model
 from .task_manager import TaskManager
 from .view_models import (
     AnnouncementPage,
     OpportunityPage,
+    RuntimeState,
     ScanCapabilities,
     ScanSummary,
     ScanView,
@@ -51,6 +53,12 @@ class AppService:
             raise ServiceError("COMPANIES_REQUIRED", "请至少选择一家企业。")
         if analysis_mode not in KNOWN_MODES:
             raise ServiceError("INVALID_ANALYSIS_MODE", "分析模式必须是 mock 或 live。")
+        active = self.get_runtime_state()
+        if active.active:
+            raise ServiceError(
+                "ANOTHER_SCAN_RUNNING",
+                f"任务 {active.scan_id} 正在运行，请等待其结束后再创建新任务。",
+            )
         scan = self.orchestrator.create(companies, date_range)
         scan.analysis_mode = analysis_mode
         scan.require_review = True
@@ -59,23 +67,40 @@ class AppService:
             # Collection does not use agents; the review gate decides the real mode.
             self.task_manager.submit(scan.scan_id, self._mock_agents())
         except Exception as exc:
+            code = getattr(exc, "code", "TASK_SUBMIT_FAILED")
             failed = self.orchestrator.load(scan.scan_id)
             failed.status = ScanStatus.FAILED.value
             failed.errors.append(
                 ScanError(
                     scope="task",
-                    code="TASK_SUBMIT_FAILED",
+                    code=code,
                     message="任务提交失败，请检查运行环境后重试。",
                     details={"stage": failed.progress.stage, "error_type": type(exc).__name__},
                 )
             )
             self.orchestrator.save(failed)
-            raise ServiceError("TASK_SUBMIT_FAILED", "任务提交失败，请稍后重试。") from exc
+            raise ServiceError(code, "任务提交失败，请稍后重试。") from exc
         return self.get_scan_view(scan.scan_id)
+
+    def get_runtime_state(self) -> RuntimeState:
+        lock = RuntimeLock(self.orchestrator.root)
+        info = lock.read()
+        if not info:
+            return RuntimeState()
+        stale = lock.is_stale(info)
+        return RuntimeState(
+            active=not stale,
+            stale=stale,
+            scan_id=info.get("scan_id"),
+            started_at=info.get("started_at"),
+            heartbeat_at=info.get("heartbeat_at"),
+        )
 
     def get_scan_view(self, scan_id: str) -> ScanView:
         scan = self.load_scan(scan_id)
-        running = self.task_manager.is_running(scan_id)
+        active_scan_id = self.task_manager.active_scan_id()
+        running = active_scan_id == scan_id or self.task_manager.is_running(scan_id)
+        blocked = bool(active_scan_id and active_scan_id != scan_id)
         root = Path(self.orchestrator.root)
         report_dir = root / "reports" / scan_id
         reports = {
@@ -89,19 +114,27 @@ class AppService:
         can_confirm = (
             scan.status == REVIEW_STATUS
             and not running
+            and not blocked
             and mode_known
             and announcements_total > 0
         )
         can_retry_sources = (
             (scan.counts.collection_failed > 0 or scan.counts.document_failed > 0)
             and not running
+            and not blocked
             and mode_known
         )
-        can_retry_failed = scan.counts.analysis_failed > 0 and not running and mode_known
+        can_retry_failed = (
+            scan.counts.analysis_failed > 0
+            and not running
+            and not blocked
+            and mode_known
+        )
         can_resume = (
             scan.status not in TERMINAL_STATUSES
             and scan.status != REVIEW_STATUS
             and not running
+            and not blocked
             and mode_known
         )
         can_download = scan.status in TERMINAL_STATUSES and any(reports.values())
@@ -109,6 +142,7 @@ class AppService:
             scan=scan,
             capabilities=ScanCapabilities(
                 is_running=running,
+                blocked_by_other_scan=blocked,
                 can_confirm=can_confirm,
                 can_save_budget=not running,
                 can_retry_sources=can_retry_sources,

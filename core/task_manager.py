@@ -1,7 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
-from .scanner import ScanOrchestrator
+
+from .errors import RuntimeBusyError
 from .models import ScanError
+from .runtime import RuntimeLock
+from .scanner import ScanOrchestrator
+
 
 class TaskManager:
     def __init__(self, orchestrator: ScanOrchestrator, max_workers: int = 1, task_timeout: int | None = None):
@@ -17,13 +21,29 @@ class TaskManager:
             if existing is not None and not existing.done():
                 self._close_resources(resources or [])
                 return existing
-            future = self.executor.submit(self._run, scan_id, agents, resources or [], retry_failed, retry_sources)
+            active = RuntimeLock(self.orchestrator.root).current_active()
+            if active:
+                self._close_resources(resources or [])
+                raise RuntimeBusyError(
+                    "ANOTHER_SCAN_RUNNING",
+                    f"任务 {active.get('scan_id')} 正在运行，请等待其结束后再提交。",
+                )
+            future = self.executor.submit(
+                self._run, scan_id, agents, resources or [], retry_failed, retry_sources
+            )
             future.add_done_callback(lambda done: self._close_resources(resources or []))
             self.futures[scan_id] = future
             return future
 
     def _run(self, scan_id, agents, resources, retry_failed=False, retry_sources=False):
+        runtime = RuntimeLock(self.orchestrator.root)
+        acquired = runtime.acquire(scan_id)
         try:
+            if not acquired:
+                raise RuntimeBusyError(
+                    "ANOTHER_SCAN_RUNNING",
+                    "另一个任务正在运行，当前任务未启动。",
+                )
             scan = self.orchestrator.load(scan_id)
             if scan.status in ('completed', 'completed_with_errors') and not (retry_failed or retry_sources):
                 return scan
@@ -69,14 +89,34 @@ class TaskManager:
                 self.orchestrator.prepare_analysis(scan_id, retry_documents=True)
             elif scan.progress.stage == 'documents':
                 self.orchestrator.prepare_analysis(scan_id)
-            self.orchestrator.run_agents(scan_id, *agents, per_announcement_timeout=scan.announcement_timeout, task_timeout=self.task_timeout or scan.analysis_timeout, retry_failed=retry_failed)
+            self.orchestrator.run_agents(
+                scan_id,
+                *agents,
+                per_announcement_timeout=scan.announcement_timeout,
+                task_timeout=self.task_timeout or scan.analysis_timeout,
+                retry_failed=retry_failed,
+            )
             return self.orchestrator.run_export(scan_id)
         except Exception as exc:
             scan = self.orchestrator.load(scan_id)
             scan.status = "failed"
-            scan.errors.append(ScanError(scope="task", code=getattr(exc, "code", "TASK_FAILED"), message="后台任务执行失败，可查看阶段与错误类型后恢复。", details={"stage": scan.progress.stage, "error_type": type(exc).__name__, "action": "检查配置、文件权限与网络后，从检查点继续。"}))
+            scan.errors.append(
+                ScanError(
+                    scope="task",
+                    code=getattr(exc, "code", "TASK_FAILED"),
+                    message="后台任务执行失败，可查看阶段与错误类型后恢复。",
+                    details={
+                        "stage": scan.progress.stage,
+                        "error_type": type(exc).__name__,
+                        "action": "检查配置、文件权限与网络后，从检查点继续。",
+                    },
+                )
+            )
             self.orchestrator._save(scan)
             raise
+        finally:
+            if acquired:
+                runtime.release(scan_id)
 
     @staticmethod
     def _close_resources(resources):
@@ -94,7 +134,20 @@ class TaskManager:
     def is_running(self, scan_id: str) -> bool:
         with self.lock:
             future = self.futures.get(scan_id)
-            return future is not None and not future.done()
+            if future is not None and not future.done():
+                return True
+        active = RuntimeLock(self.orchestrator.root).current_active()
+        return bool(active and active.get("scan_id") == scan_id)
+
+    def active_scan_id(self) -> str | None:
+        active = RuntimeLock(self.orchestrator.root).current_active()
+        if active:
+            return active.get("scan_id")
+        with self.lock:
+            for scan_id, future in self.futures.items():
+                if not future.done():
+                    return scan_id
+        return None
 
     def running_scan_ids(self) -> list[str]:
         with self.lock:

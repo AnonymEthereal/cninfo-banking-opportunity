@@ -133,6 +133,8 @@ class ScanOrchestrator:
         """Public persistence boundary used by the application service."""
         scan.updated_at = datetime.now().astimezone()
         atomic_write_json(self.root / "results" / scan.scan_id / "scan.json", scan)
+        from .runtime import touch_runtime
+        touch_runtime(self.root, scan.scan_id)
 
     def _save(self, scan: Scan):
         self.save(scan)

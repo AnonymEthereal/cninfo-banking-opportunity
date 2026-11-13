@@ -18,3 +18,8 @@ class NotFoundError(ServiceError):
 
 class InvalidStateError(ServiceError):
     pass
+
+
+class RuntimeBusyError(ServiceError):
+    """Another scan currently owns the single-flight runtime lock."""
+
