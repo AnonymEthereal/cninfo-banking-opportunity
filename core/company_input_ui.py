@@ -10,10 +10,17 @@ def cached_directory():
     return load_company_directory()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_search(query: str, limit: int, version: int):
+    return search_companies(query, cached_directory(), limit)
+
+
 def render_company_input() -> dict | None:
     state = st.session_state
     if "selected_companies" not in state:
         state.selected_companies = []
+    if "directory_version" not in state:
+        state.directory_version = 0
     if "directory_attempted" not in state:
         state.directory_attempted = True
         try:
@@ -25,6 +32,11 @@ def render_company_input() -> dict | None:
             state.directory_error = True
     directory = state.company_directory
     by_code = {item.stock_code: item for item in directory}
+
+    def find(query: str, limit: int = 30):
+        if state.directory_error:
+            return search_companies(query, directory, limit)
+        return cached_search(query, limit, state.directory_version)
 
     def add(items):
         try:
@@ -64,7 +76,9 @@ def render_company_input() -> dict | None:
     if st.button("刷新企业名录"):
         try:
             cached_directory.clear()
+            cached_search.clear()
             state.company_directory = cached_directory()
+            state.directory_version += 1
             state.directory_error = False
             st.rerun()
         except Exception:
@@ -74,7 +88,7 @@ def render_company_input() -> dict | None:
         search_tab, batch_tab, file_tab = st.tabs(["搜索添加", "批量粘贴", "Excel 导入"])
         with search_tab:
             query = st.text_input("搜索名称或股票代码", placeholder="如：招商、茅台、600、宁德时带")
-            candidates = search_companies(query, directory)
+            candidates = find(query)
             candidate_picker("匹配企业（选择即添加）", candidates, "search_candidates")
             st.caption("下拉框首项可全选当前候选；已选企业自动隐藏。模糊结果请核对名称与代码。")
         with batch_tab:
@@ -83,7 +97,7 @@ def render_company_input() -> dict | None:
                 tokens = list(dict.fromkeys(token for token in re.split(r"[\s,，;；、]+", text.strip()) if token))
                 state.batch_tokens = tokens
             for index, token in enumerate(state.get("batch_tokens", [])):
-                matches = search_companies(token, directory, limit=15)
+                matches = find(token, limit=15)
                 candidate_picker(token, matches, f"batch_match_{index}_{token}")
                 if not matches:
                     st.caption("\u6ca1\u6709\u627e\u5230\u5019\u9009\uff0c\u53ef\u6362\u4e00\u4e2a\u5173\u952e\u8bcd\u3002")

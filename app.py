@@ -1,3 +1,4 @@
+import math
 import os
 
 import streamlit as st
@@ -50,7 +51,14 @@ def show_flash() -> None:
 
 
 def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
-    view = service.get_scan_view(scan_id)
+    try:
+        view = load_scan_view(scan_id)
+    except DomainError as exc:
+        st.error(f"{exc.message}（{exc.code}）")
+        if auto_refresh:
+            # Leave the auto-refreshing fragment so the page can offer recovery actions.
+            st.rerun(scope="app")
+        return
     scan = view.scan
     if view.capabilities.blocked_by_other_scan:
         st.info("另一个任务正在运行；本任务的确认、重试和恢复入口暂不可用。")
@@ -72,11 +80,26 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
 
     with st.expander(f"检索公告（{view.announcements_total} 条）", expanded=scan.status == ScanStatus.AWAITING_REVIEW):
         keyword = st.text_input("筛选公告标题或企业", key=f'announcement_search_{scan_id}')
+        announcement_page = None
         try:
-            announcement_page = service.list_announcements(scan_id, query=keyword)
+            stamp = service.data_stamp(scan_id, "announcements.json")
+            page_size = 50
+            meta = cached_announcements(scan_id, keyword, 0, 0, stamp)
+            max_page = max(1, math.ceil(meta.total / page_size))
+            page_key = f"ann_page_{scan_id}"
+            query_key = f"ann_query_{scan_id}"
+            if st.session_state.get(query_key) != keyword:
+                st.session_state[query_key] = keyword
+                st.session_state[page_key] = 1
+            current = min(max(int(st.session_state.get(page_key, 1)), 1), max_page)
+            st.session_state[page_key] = current
+            page_no = st.number_input("公告页码", min_value=1, max_value=max_page, key=page_key, step=1)
+            announcement_page = cached_announcements(
+                scan_id, keyword, page_size, (int(page_no) - 1) * page_size, stamp
+            )
+            st.caption(f"第 {page_no}/{max_page} 页，共 {meta.total} 条。")
         except DomainError as exc:
             st.error(f"{exc.message}（{exc.code}）")
-            announcement_page = None
         if announcement_page and announcement_page.items:
             st.dataframe(
                 [
@@ -192,65 +215,88 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
         f"公告：{scan.counts.announcements}；商机：{scan.counts.opportunities}"
     )
 
+    facet_page = None
+    stamp = (0, 0)
     try:
-        opportunity_page = service.list_opportunities(scan_id)
+        stamp = service.data_stamp(scan_id, "opportunities.json")
+        facet_page = cached_opportunities(scan_id, None, None, None, 0, 0, stamp)
     except DomainError as exc:
         st.error(f"{exc.message}（{exc.code}）")
-        opportunity_page = None
-    opportunities = opportunity_page.items if opportunity_page else []
-    if opportunities:
-        filters = st.columns(3)
-        selected = filters[0].multiselect("按类别筛选", opportunity_page.categories, default=opportunity_page.categories)
-        chosen_companies = filters[1].multiselect("按企业筛选", opportunity_page.companies, default=opportunity_page.companies)
-        chosen_statuses = filters[2].multiselect("按分析状态筛选", opportunity_page.statuses, default=opportunity_page.statuses)
-        filtered = [
-            item
-            for item in opportunities
-            if item.category in selected
-            and item.company_name in chosen_companies
-            and item.analysis_status in chosen_statuses
-        ]
-        filtered.sort(key=lambda item: (item.publish_date, item.company_name, item.opportunity_id), reverse=True)
-        rows = [
-            {
-                "企业": item.company_name,
-                "股票代码": item.stock_code,
-                "日期": str(item.publish_date),
-                "类别": item.category,
-                "事件": item.event_summary,
-                "金额": "未披露" if item.amount.value is None else str(item.amount.value),
-                "币种": item.amount.currency,
-                "金额类型": item.amount.type,
-                "银行产品": "、".join(item.bank_products),
-                "分析状态": item.analysis_status,
-                "公告 ID": item.announcement_id,
-                "来源": item.source_url,
-            }
-            for item in filtered
-        ]
-        st.caption(f"筛选后 {len(rows)} 条，共 {len(opportunities)} 条；下载报告包含完整结果。")
-        st.dataframe(rows, width='stretch')
-        detail_choice = st.selectbox(
-            "查看商机证据与跟进建议",
-            [item.opportunity_id for item in filtered],
-            format_func=lambda key: next(
-                f"{item.company_name} · {item.category} · {item.event_summary[:45]}"
-                for item in filtered
-                if item.opportunity_id == key
-            ),
-            key=f'detail_{scan_id}',
-        ) if filtered else None
-        for item in [item for item in filtered if item.opportunity_id == detail_choice]:
-            with st.expander(f"{item.company_name} · {item.category} · {item.opportunity_id}"):
-                st.write(item.announcement_title)
-                st.write("营销方向：", item.marketing_direction or "待分析")
-                st.write("跟进建议：", item.suggested_action or "待补充")
-                for evidence in item.evidence:
-                    st.text(evidence.text + (f"（第 {evidence.source_page} 页）" if evidence.source_page else ""))
-                st.write("待核实：", "；".join(item.pending_verification) or "无")
-                if item.source_url.startswith(("https://", "http://")):
-                    st.link_button("查看公告原文", item.source_url)
-    else:
+    if facet_page is not None and facet_page.total:
+        filters = st.columns(4)
+        selected = filters[0].multiselect("按类别筛选", facet_page.categories, default=facet_page.categories)
+        chosen_companies = filters[1].multiselect("按企业筛选", facet_page.companies, default=facet_page.companies)
+        chosen_statuses = filters[2].multiselect("按分析状态筛选", facet_page.statuses, default=facet_page.statuses)
+        signatures = (tuple(selected), tuple(chosen_companies), tuple(chosen_statuses))
+        current_page = None
+        try:
+            summary = cached_opportunities(scan_id, *signatures, 0, 0, stamp)
+            page_size = 50
+            max_page = max(1, math.ceil(summary.total / page_size))
+            page_key = f"opp_page_{scan_id}"
+            signature_key = f"opp_filter_{scan_id}"
+            signature = repr(signatures)
+            if st.session_state.get(signature_key) != signature:
+                st.session_state[signature_key] = signature
+                st.session_state[page_key] = 1
+            current = min(max(int(st.session_state.get(page_key, 1)), 1), max_page)
+            st.session_state[page_key] = current
+            page_no = filters[3].number_input(
+                "商机页码",
+                min_value=1,
+                max_value=max_page,
+                key=page_key,
+                step=1,
+            )
+            current_page = cached_opportunities(
+                scan_id, *signatures, page_size, (int(page_no) - 1) * page_size, stamp
+            )
+            st.caption(
+                f"筛选后 {current_page.total} 条，共 {facet_page.total} 条；"
+                f"第 {page_no}/{max_page} 页。下载报告包含完整结果。"
+            )
+        except DomainError as exc:
+            st.error(f"{exc.message}（{exc.code}）")
+        if current_page and current_page.items:
+            rows = [
+                {
+                    "企业": item.company_name,
+                    "股票代码": item.stock_code,
+                    "日期": str(item.publish_date),
+                    "类别": item.category,
+                    "事件": item.event_summary,
+                    "金额": "未披露" if item.amount.value is None else str(item.amount.value),
+                    "币种": item.amount.currency,
+                    "金额类型": item.amount.type,
+                    "银行产品": "、".join(item.bank_products),
+                    "分析状态": item.analysis_status,
+                    "公告 ID": item.announcement_id,
+                    "来源": item.source_url,
+                }
+                for item in current_page.items
+            ]
+            st.dataframe(rows, width='stretch')
+            detail_choice = st.selectbox(
+                "查看商机证据与跟进建议",
+                [item.opportunity_id for item in current_page.items],
+                format_func=lambda key: next(
+                    f"{item.company_name} · {item.category} · {item.event_summary[:45]}"
+                    for item in current_page.items
+                    if item.opportunity_id == key
+                ),
+                key=f'detail_{scan_id}',
+            )
+            for item in [item for item in current_page.items if item.opportunity_id == detail_choice]:
+                with st.expander(f"{item.company_name} · {item.category} · {item.opportunity_id}"):
+                    st.write(item.announcement_title)
+                    st.write("营销方向：", item.marketing_direction or "待分析")
+                    st.write("跟进建议：", item.suggested_action or "待补充")
+                    for evidence in item.evidence:
+                        st.text(evidence.text + (f"（第 {evidence.source_page} 页）" if evidence.source_page else ""))
+                    st.write("待核实：", "；".join(item.pending_verification) or "无")
+                    if item.source_url.startswith(("https://", "http://")):
+                        st.link_button("查看公告原文", item.source_url)
+    elif facet_page is not None:
         if scan.status not in (ScanStatus.COMPLETED, ScanStatus.COMPLETED_WITH_ERRORS, ScanStatus.FAILED):
             st.info("任务处理中，结果尚未就绪。")
         elif scan.status == ScanStatus.FAILED:
@@ -266,7 +312,7 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
         try:
             st.download_button(
                 "下载 XLSX",
-                service.get_report_bytes(scan_id, 'xlsx'),
+                cached_report(scan_id, 'xlsx', service.report_stamp(scan_id, 'xlsx')),
                 file_name=f"{scan_id}.xlsx",
                 key=f'download_xlsx_{scan_id}',
             )
@@ -276,7 +322,7 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
         try:
             st.download_button(
                 "下载 HTML",
-                service.get_report_bytes(scan_id, 'html'),
+                cached_report(scan_id, 'html', service.report_stamp(scan_id, 'html')),
                 file_name=f"{scan_id}.html",
                 key=f'download_html_{scan_id}',
             )
@@ -311,7 +357,7 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
 
 def render_scan_section(scan_id: str) -> None:
     try:
-        view = service.get_scan_view(scan_id)
+        view = load_scan_view(scan_id)
     except DomainError as exc:
         st.error(f"{exc.message}（{exc.code}）")
         if st.button("清除无效任务", key="clear_invalid_scan"):
@@ -330,6 +376,52 @@ def live_scan(scan_id: str) -> None:
 
 
 service = app_service()
+
+
+@st.cache_data(ttl=1, show_spinner=False)
+def cached_scan_view(scan_id: str, stamp: tuple[int, int]):
+    return service.get_scan_view(scan_id)
+
+
+def load_scan_view(scan_id: str):
+    return cached_scan_view(scan_id, service.scan_stamp(scan_id))
+
+
+@st.cache_data(ttl=1, show_spinner=False)
+def cached_announcements(scan_id: str, query: str, limit: int, offset: int, stamp: tuple[int, int]):
+    return service.list_announcements(scan_id, query=query, limit=limit, offset=offset)
+
+
+@st.cache_data(ttl=1, show_spinner=False)
+def cached_opportunities(
+    scan_id: str,
+    categories: tuple | None,
+    companies: tuple | None,
+    statuses: tuple | None,
+    limit: int,
+    offset: int,
+    stamp: tuple[int, int],
+):
+    return service.list_opportunities(
+        scan_id,
+        categories=list(categories) if categories is not None else None,
+        companies=list(companies) if companies is not None else None,
+        statuses=list(statuses) if statuses is not None else None,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def cached_history():
+    return service.list_history(limit=100)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_report(scan_id: str, fmt: str, stamp: tuple[int, int]):
+    return service.get_report_bytes(scan_id, fmt)
+
+
 configured = all(os.getenv(key, '').strip() for key in ('LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL'))
 
 with st.sidebar:
@@ -350,7 +442,7 @@ with st.sidebar:
     st.divider()
     st.subheader("历史任务")
     try:
-        history = service.list_history(limit=100)
+        history = cached_history()
         by_id = {item.scan_id: item for item in history}
     except DomainError as exc:
         history, by_id = [], {}
@@ -383,7 +475,7 @@ scan_id = st.session_state.scan_id
 view = None
 if scan_id:
     try:
-        view = service.get_scan_view(scan_id)
+        view = load_scan_view(scan_id)
     except DomainError as exc:
         st.error(f"{exc.message}（{exc.code}）")
         st.session_state.scan_id = None
@@ -412,6 +504,7 @@ if st.button("检索公告", type="primary", disabled=busy or end < start or not
             'live' if use_live else 'mock',
         )
         st.session_state.scan_id = started.scan.scan_id
+        cached_history.clear()
         set_flash(f"公告检索已提交：{started.scan.scan_id}，完成后请先预览公告并确认分析。")
         st.rerun()
     except DomainError as exc:

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 import os
 import json
 from .config import data_dir
@@ -41,6 +41,7 @@ class ScanOrchestrator:
         scan.counts.collection_failed = 0
         scan.errors = [error for error in scan.errors if error.scope != "company"]
         interval = max(0.0, float(os.getenv("COLLECTION_INTERVAL_SECONDS", "0.5")))
+        last_summary_write = monotonic()
         for index, company in enumerate(scan.companies):
             if index and interval:
                 sleep(interval)
@@ -58,7 +59,10 @@ class ScanOrchestrator:
             scan.progress.completed += 1
             unique = {item.announcement_id: item for item in announcements}
             scan.counts.announcements = len(unique)
-            atomic_write_json(folder / "announcements.json", {"items": [item.model_dump() for item in unique.values()]})
+            now = monotonic()
+            if now - last_summary_write >= 2 or index == len(scan.companies) - 1:
+                atomic_write_json(folder / "announcements.json", {"items": [item.model_dump() for item in unique.values()]})
+                last_summary_write = now
             scan.updated_at = datetime.now().astimezone()
             self._save(scan)
         unique = {item.announcement_id: item for item in announcements}
@@ -77,7 +81,8 @@ class ScanOrchestrator:
         payload = __import__("json").loads(path.read_text(encoding="utf-8")) if path.exists() else {"items": []}
         announcements = [Announcement.model_validate(item) for item in payload.get("items", [])]
         scan.progress.total, scan.progress.completed = len(announcements), 0
-        for announcement in announcements:
+        last_summary_write = monotonic()
+        for index, announcement in enumerate(announcements):
             try:
                 if announcement.text_path and Path(announcement.text_path).exists() and Path(announcement.text_path).stat().st_size:
                     scan.progress.completed += 1
@@ -95,11 +100,17 @@ class ScanOrchestrator:
                 announcement.text_path = str(self.root / "announcements" / announcement.announcement_id / "text.txt")
                 Path(announcement.text_path).parent.mkdir(parents=True, exist_ok=True)
                 Path(announcement.text_path).write_text(text, encoding="utf-8")
-                atomic_write_json(self.root / "results" / scan.scan_id / "announcements.json", {"items": [a.model_dump() if a.announcement_id == announcement.announcement_id else a.model_dump() for a in announcements]})
             except Exception as exc:
                 scan.counts.document_failed += 1
                 scan.errors.append(ScanError(scope="announcement", announcement_id=announcement.announcement_id, code="DOCUMENT_PARSE_FAILED", message="公告正文获取或解析失败。", details={"stage": "documents", "error_type": type(exc).__name__, "title": announcement.title, "action": "查看原文，重试下载解析；扫描件目前不支持 OCR。"}))
             scan.progress.completed += 1
+            now = monotonic()
+            if now - last_summary_write >= 2 or index == len(announcements) - 1:
+                atomic_write_json(
+                    self.root / "results" / scan.scan_id / "announcements.json",
+                    {"items": [item.model_dump() for item in announcements]},
+                )
+                last_summary_write = now
             scan.updated_at = datetime.now().astimezone()
             self._save(scan)
         return scan

@@ -337,6 +337,30 @@ class AppService:
             raise NotFoundError("REPORT_NOT_FOUND", "报告文件不存在。")
         return path.read_bytes()
 
+    def scan_stamp(self, scan_id: str) -> tuple[int, int]:
+        return self._file_stamp(self._scan_dir(scan_id) / "scan.json")
+
+    def data_stamp(self, scan_id: str, filename: str) -> tuple[int, int]:
+        allowed = {"announcements.json", "opportunities.json", "scan.json"}
+        if filename not in allowed:
+            raise ServiceError("INVALID_DATA_FILE", "不支持的任务数据文件。")
+        return self._file_stamp(self._scan_dir(scan_id) / filename)
+
+    def report_stamp(self, scan_id: str, fmt: str) -> tuple[int, int]:
+        if fmt not in {"xlsx", "html"}:
+            raise ServiceError("INVALID_REPORT_FORMAT", "报告格式必须是 xlsx 或 html。")
+        return self._file_stamp(
+            Path(self.orchestrator.root) / "reports" / scan_id / f"report.{fmt}"
+        )
+
+    @staticmethod
+    def _file_stamp(path: Path) -> tuple[int, int]:
+        try:
+            stat = path.stat()
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return 0, 0
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

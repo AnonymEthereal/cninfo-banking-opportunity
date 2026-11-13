@@ -21,6 +21,7 @@ class NoopCollector:
 
 def test_app_renders_without_network_directory(tmp_path, monkeypatch):
     st.cache_resource.clear()
+    st.cache_data.clear()
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setattr("core.company_input_ui.cached_directory", lambda: QUICK_COMPANIES)
     app = AppTest.from_file(str(APP_PATH), default_timeout=30)
@@ -31,6 +32,7 @@ def test_app_renders_without_network_directory(tmp_path, monkeypatch):
 
 def test_app_renders_completed_scan_and_reports(tmp_path, monkeypatch):
     st.cache_resource.clear()
+    st.cache_data.clear()
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setattr("core.company_input_ui.cached_directory", lambda: QUICK_COMPANIES)
     runner = ScanOrchestrator(NoopCollector(), tmp_path)
@@ -57,6 +59,7 @@ def test_app_renders_completed_scan_and_reports(tmp_path, monkeypatch):
 
 def test_app_renders_running_scan_fragment(tmp_path, monkeypatch):
     st.cache_resource.clear()
+    st.cache_data.clear()
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setattr("core.company_input_ui.cached_directory", lambda: QUICK_COMPANIES)
     runner = ScanOrchestrator(NoopCollector(), tmp_path)

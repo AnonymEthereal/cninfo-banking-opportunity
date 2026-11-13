@@ -67,7 +67,13 @@ def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, 
     scan.status = 'analyzing'
     scan.progress.total = len(announcements)
     baseline = [e for e in scan.errors if e.scope != 'analysis']
-    def persist():
+    last_persist = 0.0
+
+    def persist(force=False):
+        nonlocal last_persist
+        now = monotonic()
+        if not force and now - last_persist < 2:
+            return
         items = {o['opportunity_id']: o for r in records.values() for o in r['items']}
         atomic_write_json(folder / 'opportunities.json', {'items': list(items.values())})
         scan.errors = baseline + [ScanError(scope='analysis', announcement_id=k, code=r['code'], message='公告分析失败；已保存检查点。', details={'stage': r.get('stage', 'agents'), 'error_type': r.get('error_type', 'TimeoutError' if r['code'] == 'TASK_TIMEOUT' else 'Unknown'), 'error_message': r.get('error_message', ''), 'announcement_budget_seconds': seconds, 'batch_budget_seconds': task_seconds, 'action': '超时可增加预算后重试；其他错误请检查模型配置、服务额度或结构化输出。'}) for k,r in records.items() if r['status']=='failed']
@@ -76,7 +82,9 @@ def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, 
         scan.progress.completed = len(records)
         scan.progress.stage = 'agents'
         runner._save(scan)
-    persist()
+        last_persist = now
+
+    persist(force=True)
     end = monotonic() + task_seconds
     with ThreadPoolExecutor(max_workers=workers) as pool:
         active = {}
@@ -95,6 +103,7 @@ def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, 
                     records[a.announcement_id] = f.result()
                     atomic_write_json(folder/'agents'/a.announcement_id/'result.json', records[a.announcement_id])
             persist()
+    persist(force=True)
     scan.progress.stage = 'analysis_completed'
     runner._save(scan)
     return scan
