@@ -66,6 +66,23 @@ def test_category_filter_adds_matching_companies(tmp_path, monkeypatch):
     assert {item["stock_code"] for item in selected} == {item.stock_code for item in expected}
 
 
+def test_category_filter_explains_directory_size_gap(tmp_path, monkeypatch):
+    st.cache_resource.clear()
+    st.cache_data.clear()
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    directory = [
+        Company(stock_code=f"{index:06d}", company_name=f"企业{index}")
+        for index in range(7000)
+    ]
+    monkeypatch.setattr("core.company_input_ui.cached_directory", lambda: directory)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    app.run()
+    assert not app.exception
+    # The searchable directory includes B shares, CDRs and NEEQ names, so the
+    # picker states why its A-share count is smaller.
+    assert any("B 股" in caption.value and "7,000" in caption.value for caption in app.caption)
+
+
 def test_app_renders_completed_scan_and_reports(tmp_path, monkeypatch):
     st.cache_resource.clear()
     st.cache_data.clear()

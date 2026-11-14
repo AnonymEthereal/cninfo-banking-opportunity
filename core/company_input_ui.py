@@ -93,7 +93,7 @@ def render_company_input() -> dict | None:
             candidate_picker("匹配企业（选择即添加）", candidates, "search_candidates")
             st.caption("下拉框首项可全选当前候选；已选企业自动隐藏。模糊结果请核对名称与代码。")
         with filter_tab:
-            render_category_filter(add)
+            render_category_filter(add, directory_size=0 if state.directory_error else len(directory))
         with batch_tab:
             text = st.text_area("粘贴企业名称或代码", placeholder="平安银行，招商\n600519", help="换行、空格、逗号或分号分隔。模糊名称逐项确认，不会自动猜选。")
             if st.button("识别候选企业", disabled=not text.strip()):

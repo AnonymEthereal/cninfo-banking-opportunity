@@ -38,7 +38,7 @@ def _ordered(values, preferred: tuple[str, ...]):
     return known + [value for value in values if value not in preferred]
 
 
-def render_category_filter(add) -> None:
+def render_category_filter(add, directory_size: int = 0) -> None:
     try:
         with st.spinner("加载分类元数据…"):
             items = cached_meta()
@@ -46,6 +46,12 @@ def render_category_filter(add) -> None:
         st.warning(f"{exc.message}（{exc.code}）")
         st.caption("分类筛选暂不可用；上面的搜索、批量粘贴和 Excel 导入不受影响。")
         return
+
+    if directory_size > len(items):
+        st.caption(
+            f"分类筛选覆盖 {len(items):,} 家沪深北 A 股；搜索可查 {directory_size:,} 家，"
+            "多出的部分是 B 股、CDR 与新三板挂牌公司，它们没有本页可用的板块/行业/地区元数据。"
+        )
 
     provinces_all = sorted({item.province for item in items if item.province})
     board_counts = option_counts(items, "board")
