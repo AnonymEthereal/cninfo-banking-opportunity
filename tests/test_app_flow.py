@@ -34,7 +34,32 @@ def test_app_renders_without_network_directory(tmp_path, monkeypatch):
     assert not app.exception
     assert any(button.label == "检索公告" for button in app.button)
     # The analysis mode is chosen after collection, not before it.
-    assert not app.get("segmented_control")
+    assert not [
+        control
+        for control in app.get("segmented_control")
+        if any("演示" in str(option) for option in (control.options or []))
+    ]
+
+
+def test_category_filter_adds_matching_companies(tmp_path, monkeypatch):
+    st.cache_resource.clear()
+    st.cache_data.clear()
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("core.company_input_ui.cached_directory", lambda: QUICK_COMPANIES)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    app.run()
+    assert not app.exception
+    assert {tab.label for tab in app.tabs} >= {"搜索添加", "分类筛选", "批量粘贴", "Excel 导入"}
+
+    app.multiselect(key="meta_boards").select("北交所").run()
+    assert not app.exception
+    add_all = next(button for button in app.button if button.key == "meta_add_all")
+    assert "362" in add_all.label
+    add_all.click().run()
+    assert not app.exception
+    selected = app.session_state["selected_companies"]
+    assert len(selected) == 362
+    assert {item["stock_code"][:2] for item in selected} <= {"43", "83", "87", "88", "92"}
 
 
 def test_app_renders_completed_scan_and_reports(tmp_path, monkeypatch):

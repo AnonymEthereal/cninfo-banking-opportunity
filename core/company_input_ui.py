@@ -3,6 +3,7 @@ import re
 import streamlit as st
 from .company_directory import QUICK_COMPANIES, load_company_directory, search_companies, merge_companies
 from .company_import_ui import render_excel_import
+from .company_meta_ui import render_category_filter
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -85,12 +86,14 @@ def render_company_input() -> dict | None:
             st.error("刷新失败，请稍后重试。")
     add_col, selected_col = st.columns([3, 2])
     with add_col:
-        search_tab, batch_tab, file_tab = st.tabs(["搜索添加", "批量粘贴", "Excel 导入"])
+        search_tab, filter_tab, batch_tab, file_tab = st.tabs(["搜索添加", "分类筛选", "批量粘贴", "Excel 导入"])
         with search_tab:
             query = st.text_input("搜索名称或股票代码", placeholder="如：招商、茅台、600、宁德时带")
             candidates = find(query)
             candidate_picker("匹配企业（选择即添加）", candidates, "search_candidates")
             st.caption("下拉框首项可全选当前候选；已选企业自动隐藏。模糊结果请核对名称与代码。")
+        with filter_tab:
+            render_category_filter(add)
         with batch_tab:
             text = st.text_area("粘贴企业名称或代码", placeholder="平安银行，招商\n600519", help="换行、空格、逗号或分号分隔。模糊名称逐项确认，不会自动猜选。")
             if st.button("识别候选企业", disabled=not text.strip()):

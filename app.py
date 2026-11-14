@@ -94,7 +94,8 @@ def app_service(fingerprint: tuple) -> AppService:
 
 EXPECTED_BACKEND_API = 3
 BACKEND_MODULES = (
-    "core.config",    "core.errors",
+    "core.config",
+    "core.errors",
     "core.models",
     "core.storage",
     "core.runtime",
@@ -103,7 +104,9 @@ BACKEND_MODULES = (
     "core.llm_client",
     "core.calendar",
     "core.company_directory",
+    "core.company_meta",
     "core.company_import",
+    "core.company_meta_ui",
     "core.company_import_ui",
     "core.company_input_ui",
     "collectors.cninfo",
