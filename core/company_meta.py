@@ -13,8 +13,9 @@ Business rules encoded here:
   ``A04004`` (pre-IPO placeholders) are dropped by requiring six digits.
 * 上市板块 is derived from the stock code prefix, because Eastmoney reports
   "风险警示板" as its own board and would otherwise lose the real board.
-* 监管状态 is ``风险警示`` when the security type says so or the short name
-  carries an ST marker, otherwise ``正常``.
+* 监管状态 has four buckets: ``正常``, ``ST``, ``*ST`` and ``已退市``. The short
+  name carries the ST / *ST / ``XX退`` marker; ``PT`` names are historical
+  delisted stocks in 特别转让.
 * 城市 is parsed from the registered address; direct-controlled municipalities
   fall back to the province name, and unparsable addresses stay empty.
 """
@@ -28,7 +29,13 @@ from pathlib import Path
 SNAPSHOT_PATH = Path(__file__).resolve().parent.parent / "resources" / "company_meta.json"
 FIELDS = ("stock_code", "company_name", "board", "industry", "province", "city", "status")
 STATUS_NORMAL = "正常"
-STATUS_RISK = "风险警示"
+STATUS_ST = "ST"
+STATUS_STAR_ST = "*ST"
+STATUS_DELISTED = "已退市"
+STATUSES = (STATUS_NORMAL, STATUS_ST, STATUS_STAR_ST, STATUS_DELISTED)
+# Delisted names stay in the snapshot for completeness but are not useful for a
+# watchlist, so the picker starts with the listed population selected.
+DEFAULT_STATUSES = (STATUS_NORMAL, STATUS_ST, STATUS_STAR_ST)
 MUNICIPALITIES = {"北京", "上海", "天津", "重庆"}
 
 _BOARD_BY_PREFIX = (
@@ -65,7 +72,6 @@ _ETHNIC_SUFFIXES = (
     "蒙古族", "藏族", "维吾尔族", "哈萨克族", "布依族", "苗族", "土家族", "彝族",
     "侗族", "瑶族", "白族", "傣族", "傈僳族", "哈尼族", "朝鲜族", "满族", "自治",
 )
-_ST_MARKERS = ("ST", "*ST", "SST", "S*ST", "PT")
 _EXCLUDED_TYPE_TOKENS = ("B股", "存托", "三板")
 # Older Eastmoney/CSRC labels still present on a few hundred rows. Folding them
 # into the current level-1 names avoids near-duplicate filter options such as
@@ -128,11 +134,25 @@ def board_for(stock_code: str, security_type: str = "") -> str:
 
 
 def status_for(company_name: str, security_type: str = "") -> str:
-    if "风险警示" in security_type or "退市" in security_type:
-        return STATUS_RISK
-    name = (company_name or "").strip().upper()
-    if name.startswith(_ST_MARKERS) or "退市" in company_name or name.endswith("退"):
-        return STATUS_RISK
+    """Split the single "风险警示" bucket into ST / *ST / delisted.
+
+    Eastmoney reports every risk-warning name under one board type, so the short
+    name is the only field that distinguishes *ST from ST and from names already
+    in the delisting process (``XX退`` / ``退市XX``), plus the legacy ``PT``
+    marker used for delisted stocks in 特别转让.
+    """
+    name = (company_name or "").strip()
+    upper = name.upper()
+    if "退市" in name or upper.endswith("退") or upper.startswith("PT"):
+        return STATUS_DELISTED
+    if upper.startswith(("*ST", "S*ST")):
+        return STATUS_STAR_ST
+    if upper.startswith(("ST", "SST")):
+        return STATUS_ST
+    if "风险警示" in security_type:
+        # Board says risk warning but the name lost its marker; keep it out of
+        # the normal bucket rather than silently trusting the name.
+        return STATUS_ST
     return STATUS_NORMAL
 
 

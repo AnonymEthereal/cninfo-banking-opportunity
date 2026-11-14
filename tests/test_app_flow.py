@@ -9,6 +9,7 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from core.company_directory import QUICK_COMPANIES
+from core.company_meta import DEFAULT_STATUSES, filter_companies, load_snapshot
 from core.models import Announcement, Company, DateRange, Opportunity
 from core.runtime import RuntimeLock
 from core.scanner import ScanOrchestrator
@@ -46,6 +47,9 @@ def test_category_filter_adds_matching_companies(tmp_path, monkeypatch):
     st.cache_data.clear()
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setattr("core.company_input_ui.cached_directory", lambda: QUICK_COMPANIES)
+    expected = filter_companies(
+        load_snapshot(), boards=["北交所"], statuses=list(DEFAULT_STATUSES)
+    )
     app = AppTest.from_file(str(APP_PATH), default_timeout=60)
     app.run()
     assert not app.exception
@@ -54,12 +58,12 @@ def test_category_filter_adds_matching_companies(tmp_path, monkeypatch):
     app.multiselect(key="meta_boards").select("北交所").run()
     assert not app.exception
     add_all = next(button for button in app.button if button.key == "meta_add_all")
-    assert "362" in add_all.label
+    assert f"{len(expected):,}" in add_all.label
     add_all.click().run()
     assert not app.exception
     selected = app.session_state["selected_companies"]
-    assert len(selected) == 362
-    assert {item["stock_code"][:2] for item in selected} <= {"43", "83", "87", "88", "92"}
+    assert len(selected) == len(expected)
+    assert {item["stock_code"] for item in selected} == {item.stock_code for item in expected}
 
 
 def test_app_renders_completed_scan_and_reports(tmp_path, monkeypatch):

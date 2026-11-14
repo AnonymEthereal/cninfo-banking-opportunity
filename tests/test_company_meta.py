@@ -6,8 +6,11 @@ import pytest
 from core.company_meta import (
     FIELDS,
     SNAPSHOT_PATH,
+    STATUS_DELISTED,
     STATUS_NORMAL,
-    STATUS_RISK,
+    STATUS_ST,
+    STATUS_STAR_ST,
+    STATUSES,
     CompanyMeta,
     MetaSnapshotError,
     board_for,
@@ -67,13 +70,21 @@ def test_board_falls_back_to_reported_market():
     assert board_for("999999", "未知市场A股") == "其他"
 
 
-def test_status_marks_risk_warning_and_st_names():
+def test_status_splits_st_star_st_and_delisted():
     assert status_for("平安银行", "深交所主板A股") == STATUS_NORMAL
-    assert status_for("ST星源", "深交所主板A股") == STATUS_RISK
-    assert status_for("*ST高鸿", "深交所主板A股") == STATUS_RISK
-    assert status_for("S*ST前锋", "") == STATUS_RISK
-    assert status_for("国华退", "深交所主板A股") == STATUS_RISK
-    assert status_for("正常公司", "上交所风险警示板A股") == STATUS_RISK
+    assert status_for("ST星源", "深交所主板A股") == STATUS_ST
+    assert status_for("SST天海", "") == STATUS_ST
+    assert status_for("*ST高鸿", "深交所主板A股") == STATUS_STAR_ST
+    assert status_for("S*ST前锋", "") == STATUS_STAR_ST
+    # Names in the delisting process lose the ST prefix and end with 退.
+    assert status_for("国华退", "深交所风险警示板A股") == STATUS_DELISTED
+    assert status_for("退市环球", "上交所主板A股") == STATUS_DELISTED
+    # PT is the legacy 特别转让 marker for delisted stocks.
+    assert status_for("PT水仙", "上交所主板A股") == STATUS_DELISTED
+    # A risk-warning board type without a name marker is still not normal.
+    assert status_for("正常公司", "上交所风险警示板A股") == STATUS_ST
+    # S-prefixed names that are not SST/S*ST are only 未股改, not risk warnings.
+    assert status_for("S佳通", "上交所主板A股") == STATUS_NORMAL
 
 
 def test_city_extraction_handles_province_prefix_and_direct_municipalities():
@@ -142,7 +153,7 @@ def test_filter_combines_category_conditions():
              province="贵州", city="仁怀"),
         meta("300750", "宁德时代", board="创业板", industry="电力设备",
              province="福建", city="宁德"),
-        meta("000004", "国华退", industry="计算机", city="深圳", status=STATUS_RISK),
+        meta("000004", "国华退", industry="计算机", city="深圳", status=STATUS_DELISTED),
     ]
     assert [item.stock_code for item in filter_companies(items)] == [
         "000001", "600519", "300750", "000004"
@@ -157,13 +168,21 @@ def test_filter_combines_category_conditions():
     assert [item.stock_code for item in filter_companies(items, industries=["银行", "计算机"])] == [
         "000001", "000004"
     ]
-    assert [item.stock_code for item in filter_companies(items, statuses=[STATUS_RISK])] == [
+    assert [item.stock_code for item in filter_companies(items, statuses=[STATUS_DELISTED])] == [
         "000004"
     ]
+    assert [
+        item.stock_code
+        for item in filter_companies(
+            items, statuses=[STATUS_NORMAL, STATUS_STAR_ST], provinces=["广东"]
+        )
+    ] == ["000001"]
     assert [item.stock_code for item in filter_companies(items, query=" 茅台 ")] == ["600519"]
     assert [
         item.stock_code
-        for item in filter_companies(items, provinces=["广东"], statuses=[STATUS_RISK], query="国华")
+        for item in filter_companies(
+            items, provinces=["广东"], statuses=[STATUS_DELISTED], query="国华"
+        )
     ] == ["000004"]
     assert filter_companies(items, provinces=["广东"], cities=["宁德"]) == []
 
@@ -229,7 +248,14 @@ def test_committed_snapshot_covers_the_a_share_market():
     with_city = sum(1 for item in items if item.city)
     assert with_city / len(items) > 0.95, f"only {with_city} of {len(items)} have a city"
     statuses = {item.status for item in items}
-    assert statuses == {STATUS_NORMAL, STATUS_RISK}
+    assert statuses == set(STATUSES)
+    counts = {status: sum(1 for item in items if item.status == status) for status in STATUSES}
+    assert counts[STATUS_NORMAL] > 5000
+    assert counts[STATUS_ST] > 100
+    assert counts[STATUS_STAR_ST] > 100
+    assert counts[STATUS_DELISTED] > 100
+    assert by_code["000004"].status == STATUS_DELISTED
+    assert by_code["000005"].status == STATUS_ST
 
 
 def test_snapshot_file_is_small_enough_for_the_repository():

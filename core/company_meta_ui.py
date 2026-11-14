@@ -9,8 +9,8 @@ from __future__ import annotations
 import streamlit as st
 
 from .company_meta import (
-    STATUS_NORMAL,
-    STATUS_RISK,
+    DEFAULT_STATUSES,
+    STATUSES,
     MetaSnapshotError,
     city_options,
     filter_companies,
@@ -19,7 +19,12 @@ from .company_meta import (
 )
 
 BOARD_ORDER = ("上交所主板", "深交所主板", "创业板", "上交所科创板", "北交所", "其他")
-STATUS_CHOICES = {"全部": (), "仅正常": (STATUS_NORMAL,), "仅风险警示": (STATUS_RISK,)}
+STATUS_LABELS = {
+    "正常": "正常上市",
+    "ST": "ST（风险警示）",
+    "*ST": "*ST（退市风险警示）",
+    "已退市": "已退市",
+}
 TABLE_LIMIT = 400
 
 
@@ -89,11 +94,14 @@ def render_category_filter(add) -> None:
 
     status_left, status_right = st.columns([2, 3])
     with status_left:
-        status = st.segmented_control(
+        status_counts = option_counts(items, "status")
+        statuses = st.multiselect(
             "监管状态",
-            list(STATUS_CHOICES),
-            default="全部",
+            [status for status in STATUSES if status in status_counts],
+            default=[status for status in DEFAULT_STATUSES if status in status_counts],
+            format_func=lambda value: f"{STATUS_LABELS.get(value, value)}（{status_counts.get(value, 0):,}）",
             key="meta_status",
+            placeholder="不限",
         )
     with status_right:
         query = st.text_input(
@@ -101,6 +109,7 @@ def render_category_filter(add) -> None:
             placeholder="名称或代码，如 银行、600",
             key="meta_query",
         )
+    st.caption("默认不含已退市企业；需要时勾选“已退市”。ST 为其他风险警示，*ST 为退市风险警示。")
 
     matched = filter_companies(
         items,
@@ -108,7 +117,7 @@ def render_category_filter(add) -> None:
         provinces=provinces,
         cities=cities,
         industries=industries,
-        statuses=STATUS_CHOICES.get(status or "全部", ()),
+        statuses=statuses,
         query=query,
     )
     st.caption(
@@ -130,7 +139,7 @@ def render_category_filter(add) -> None:
             "行业": item.industry,
             "省份": item.province,
             "城市": item.city or "—",
-            "状态": item.status,
+            "状态": STATUS_LABELS.get(item.status, item.status),
         }
         for item in shown
     ]
