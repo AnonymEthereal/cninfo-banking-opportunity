@@ -57,6 +57,7 @@ class ScanStatus(str, Enum):
     COMPLETED = "completed"
     COMPLETED_WITH_ERRORS = "completed_with_errors"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class Progress(BaseModel):

@@ -119,6 +119,8 @@ data/announcements/{announcement_id}/text.txt
 
 MVP 使用单进程后台线程执行，UI 通过轮询 `scan.json` 获取状态。线程异常必须由编排器捕获并写入 `failed`，不能让 Streamlit 页面直接崩溃。
 
+运行中的停止是协作式请求：`TaskManager` 为任务维护停止事件，采集、正文处理和公告分析仅在安全边界检查事件，不中断正在进行的 HTTP/模型调用。分析池不再调度新公告，已启动公告完成并写入检查点后，任务状态写为 `cancelled`；恢复时复用成功检查点并清除此前的取消标记。运行锁在提交时获取，心跳线程在长模型调用期间持续刷新；锁文件同时保存阶段与进度，供 UI 展示运行时长、最近心跳和卡顿提示。
+
 ## 6. 采集与解析
 
 定义 `AnnouncementCollector` 协议：
@@ -228,4 +230,3 @@ get_report_path(scan_id: str, format: ReportFormat) -> Path
 2. 先做串行 Agent，确保日志、证据和失败定位清晰；后续再按公告级别并发。
 3. 先验证巨潮采集稳定性，再投入 UI 美化和复杂编排。
 4. 所有输出从统一 `Opportunity` 模型生成，禁止 Excel 和 HTML 各自解析模型结果。
-

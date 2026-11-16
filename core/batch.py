@@ -77,7 +77,16 @@ def analyze_one(announcement, agents, folder, seconds):
     finally:
         deadline.reset(token)
 
-def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, retry_failed=False):
+def run_batch(
+    runner,
+    scan,
+    agents,
+    seconds=600,
+    task_seconds=28800,
+    workers=2,
+    retry_failed=False,
+    cancel_event=None,
+):
     folder = runner.root / 'results' / scan.scan_id
     announcements = [Announcement.model_validate(x) for x in json.loads((folder / 'announcements.json').read_text(encoding='utf-8'))['items']]
     records = {}
@@ -120,8 +129,12 @@ def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, 
     end = monotonic() + task_seconds
     with ThreadPoolExecutor(max_workers=workers) as pool:
         active = {}
-        while pending or active:
-            while pending and len(active) < workers:
+        while active or (
+            pending and not (cancel_event is not None and cancel_event.is_set())
+        ):
+            while pending and len(active) < workers and not (
+                cancel_event is not None and cancel_event.is_set()
+            ):
                 a = pending.pop(0)
                 if monotonic() >= end:
                     records[a.announcement_id] = {'status':'failed','items':[], 'code':'TASK_TIMEOUT'}
@@ -136,6 +149,8 @@ def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, 
                     atomic_write_json(folder/'agents'/a.announcement_id/'result.json', records[a.announcement_id])
             persist()
     persist(force=True)
+    if cancel_event is not None and cancel_event.is_set():
+        return scan
     scan.progress.stage = 'analysis_completed'
     runner._save(scan)
     return scan

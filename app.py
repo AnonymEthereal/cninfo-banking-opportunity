@@ -55,6 +55,7 @@ STATUS_LABELS = {
     "completed": "已完成",
     "completed_with_errors": "完成（含失败项）",
     "failed": "失败",
+    "cancelled": "已停止",
 }
 STATUS_COLORS = {
     "queued": "gray",
@@ -65,6 +66,7 @@ STATUS_COLORS = {
     "completed": "green",
     "completed_with_errors": "orange",
     "failed": "red",
+    "cancelled": "gray",
 }
 STAGE_LABELS = {
     "queued": "排队",
@@ -94,7 +96,7 @@ def app_service(fingerprint: tuple) -> AppService:
     return AppService(orchestrator, TaskManager(orchestrator))
 
 
-EXPECTED_BACKEND_API = 3
+EXPECTED_BACKEND_API = 4
 BACKEND_MODULES = (
     "core.config",
     "core.errors",
@@ -443,6 +445,8 @@ def render_empty_opportunities(scan) -> None:
     status = status_value(scan)
     if scan.analysis_mode == "mock" and status in TERMINAL:
         st.info("演示模式未生成商机；这不代表真实公告中没有商机。")
+    elif status == ScanStatus.CANCELLED.value:
+        st.info("任务已停止；当前结果仅包含已完成的公告检查点。继续任务后会补齐剩余处理。")
     elif status not in TERMINAL and status != "failed":
         st.info("任务处理中，结果尚未就绪。")
     elif status == "failed":
@@ -660,12 +664,40 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
             f"采集失败 {scan.counts.collection_failed} · 正文解析失败 "
             f"{scan.counts.document_failed} · 分析失败 {scan.counts.analysis_failed}"
         )
-    if scan.progress.total and status not in TERMINAL:
+    if scan.progress.total and status not in TERMINAL and status != ScanStatus.CANCELLED.value:
         stage = STAGE_LABELS.get(scan.progress.stage, scan.progress.stage)
         st.progress(
             min(scan.progress.completed / scan.progress.total, 1.0),
             text=f"{stage} · {scan.progress.completed}/{scan.progress.total}",
         )
+    if view.capabilities.is_running:
+        runtime_state = service.get_runtime_state()
+        elapsed = runtime_state.elapsed_seconds
+        duration = f"{elapsed // 3600} 小时 {(elapsed % 3600) // 60} 分钟"
+        heartbeat_age = runtime_state.heartbeat_age_seconds
+        stage = STAGE_LABELS.get(runtime_state.stage or scan.progress.stage, runtime_state.stage or scan.progress.stage)
+        st.caption(
+            f"当前阶段：{stage} · 已运行 {duration}"
+            + (
+                f" · 最近心跳 {heartbeat_age} 秒前"
+                if heartbeat_age is not None
+                else ""
+            )
+        )
+        if runtime_state.stale or (
+            heartbeat_age is not None and heartbeat_age > 300
+        ):
+            st.warning("任务心跳已较久未更新，可能卡住；请先检查后台日志，不要立即重复启动。")
+        if view.capabilities.stop_requested:
+            st.info("停止请求已发出，等待已启动的公告处理到达安全节点。")
+        elif view.capabilities.can_cancel:
+            if st.button("停止任务", key=f"cancel_{scan_id}"):
+                try:
+                    service.cancel_scan(scan_id)
+                    st.warning("已请求停止。已启动的网络或模型调用会完成后，在安全节点停止。")
+                    st.rerun(scope="app")
+                except DomainError as exc:
+                    st.error(f"{exc.message}（{exc.code}）")
 
     if status == ScanStatus.AWAITING_REVIEW.value:
         st.info("公告检索完成。核对公告后选择分析方式，再确认开始分析。")
@@ -708,7 +740,10 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
         return
 
     if view.capabilities.can_resume:
-        st.warning("任务当前未运行，可从已保存进度继续；成功检查点会复用，失败分析不会自动重试。")
+        if status == ScanStatus.CANCELLED.value:
+            st.warning("任务已停止；可从已保存进度继续。已完成的检查点会复用。")
+        else:
+            st.warning("任务当前未运行，可从已保存进度继续；成功检查点会复用，失败分析不会自动重试。")
         if st.button("从检查点继续当前任务", key=f"resume_{scan_id}"):
             try:
                 service.resume_scan(scan_id)
@@ -1015,6 +1050,30 @@ if end < start:
     st.error("结束日期不能早于开始日期。")
 if runtime.active and (scan_id is None or runtime.scan_id != scan_id):
     st.info(f"任务 {runtime.scan_id} 正在运行，请等待其结束后再创建新任务。")
+    elapsed = runtime.elapsed_seconds
+    duration = f"{elapsed // 3600} 小时 {(elapsed % 3600) // 60} 分钟"
+    runtime_stage = STAGE_LABELS.get(runtime.stage or "", runtime.stage or "运行中")
+    st.caption(
+        f"当前阶段：{runtime_stage} · 已运行 {duration}"
+        + (f" · 进度 {runtime.completed}/{runtime.total}" if runtime.total else "")
+        + (
+            f" · 最近心跳 {runtime.heartbeat_age_seconds} 秒前"
+            if runtime.heartbeat_age_seconds is not None
+            else ""
+        )
+    )
+    if runtime.heartbeat_age_seconds is not None and runtime.heartbeat_age_seconds > 300:
+        st.warning("任务心跳已较久未更新，可能卡住；请先检查后台日志，不要立即重复启动。")
+    if runtime.scan_id and service.task_manager.stop_requested(runtime.scan_id):
+        st.info("停止请求已发出，等待已启动的公告处理到达安全节点。")
+    elif runtime.scan_id and service.task_manager.can_cancel(runtime.scan_id):
+        if st.button("停止当前任务", key="cancel_active_scan"):
+            try:
+                service.cancel_scan(runtime.scan_id)
+                st.warning("已请求停止。已启动的网络或模型调用完成后，会在安全节点停止。")
+                st.rerun()
+            except DomainError as exc:
+                st.error(f"{exc.message}（{exc.code}）")
 elif runtime.stale:
     st.caption("检测到上次任务锁未正常释放，恢复任务时会自动接管。")
 if busy:

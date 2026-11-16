@@ -1,6 +1,7 @@
 import json
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -41,7 +42,7 @@ class AppService:
     # Bump whenever a public method signature changes. ``app.py`` compares this
     # with its own expectation so a deploy that leaves stale modules loaded is
     # detected instead of failing with a TypeError at call time.
-    API_VERSION = 3
+    API_VERSION = 4
 
     def __init__(self, orchestrator: ScanOrchestrator, task_manager: TaskManager | None = None):
         self.orchestrator = orchestrator
@@ -95,12 +96,37 @@ class AppService:
         if not info:
             return RuntimeState()
         stale = lock.is_stale(info)
+        now = datetime.now().astimezone()
+        try:
+            started = datetime.fromisoformat(str(info.get("started_at", "")))
+            if started.tzinfo is None:
+                started = started.astimezone()
+            elapsed_seconds = max(0, int((now - started).total_seconds()))
+        except (TypeError, ValueError):
+            elapsed_seconds = 0
+        try:
+            heartbeat = datetime.fromisoformat(str(info.get("heartbeat_at", "")))
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.astimezone()
+            heartbeat_age_seconds = max(0, int((now - heartbeat).total_seconds()))
+        except (TypeError, ValueError):
+            heartbeat_age_seconds = None
+        try:
+            progress_completed = max(0, int(info.get("completed", 0)))
+            progress_total = max(0, int(info.get("total", 0)))
+        except (TypeError, ValueError):
+            progress_completed, progress_total = 0, 0
         return RuntimeState(
             active=not stale,
             stale=stale,
             scan_id=info.get("scan_id"),
             started_at=info.get("started_at"),
             heartbeat_at=info.get("heartbeat_at"),
+            elapsed_seconds=elapsed_seconds,
+            heartbeat_age_seconds=heartbeat_age_seconds,
+            stage=info.get("stage"),
+            completed=progress_completed,
+            total=progress_total,
         )
 
     def get_scan_view(self, scan_id: str) -> ScanView:
@@ -138,7 +164,7 @@ class AppService:
             and mode_known
         )
         can_resume = (
-            scan.status not in TERMINAL_STATUSES
+            (scan.status not in TERMINAL_STATUSES or scan.status == ScanStatus.CANCELLED)
             and scan.status != REVIEW_STATUS
             and not running
             and not blocked
@@ -155,6 +181,8 @@ class AppService:
             scan=scan,
             capabilities=ScanCapabilities(
                 is_running=running,
+                can_cancel=running and self.task_manager.can_cancel(scan_id),
+                stop_requested=self.task_manager.stop_requested(scan_id),
                 blocked_by_other_scan=blocked,
                 can_confirm=can_confirm,
                 can_save_budget=not running,
@@ -230,6 +258,11 @@ class AppService:
         if scan.analysis_mode not in KNOWN_MODES:
             raise ServiceError("ANALYSIS_MODE_UNKNOWN", "恢复前请先选择原任务使用的分析模式。")
         self._submit_scan(scan)
+        return self.get_scan_view(scan_id)
+
+    def cancel_scan(self, scan_id: str) -> ScanView:
+        if not self.task_manager.request_stop(scan_id):
+            raise InvalidStateError("SCAN_NOT_RUNNING", "该任务当前没有可停止的后台作业。")
         return self.get_scan_view(scan_id)
 
     def retry_sources(self, scan_id: str) -> ScanView:

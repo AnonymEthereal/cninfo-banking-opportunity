@@ -2,6 +2,10 @@ import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Lock
+
+
+_WRITE_LOCK = Lock()
 
 
 class RuntimeLock:
@@ -67,6 +71,9 @@ class RuntimeLock:
                         "scan_id": scan_id,
                         "started_at": now,
                         "heartbeat_at": now,
+                        "stage": "queued",
+                        "completed": 0,
+                        "total": 0,
                     },
                     handle,
                     ensure_ascii=False,
@@ -75,27 +82,57 @@ class RuntimeLock:
         return False
 
     def heartbeat(self, scan_id: str) -> None:
-        info = self.read()
-        if not info or info.get("scan_id") != scan_id or info.get("pid") != os.getpid():
-            return
-        info["heartbeat_at"] = datetime.now().astimezone().isoformat()
+        with _WRITE_LOCK:
+            info = self.read()
+            if not info or info.get("scan_id") != scan_id or info.get("pid") != os.getpid():
+                return
+            info["heartbeat_at"] = datetime.now().astimezone().isoformat()
+            self._write(info)
+
+    def update_progress(self, scan_id: str, stage: str, completed: int, total: int) -> None:
+        with _WRITE_LOCK:
+            info = self.read()
+            if not info or info.get("scan_id") != scan_id or info.get("pid") != os.getpid():
+                return
+            info.update(
+                stage=stage,
+                completed=max(0, int(completed)),
+                total=max(0, int(total)),
+                heartbeat_at=datetime.now().astimezone().isoformat(),
+            )
+            self._write(info)
+
+    def _write(self, info: dict) -> None:
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, self.path)
 
     def release(self, scan_id: str) -> None:
-        info = self.read()
-        if not info or info.get("scan_id") != scan_id or info.get("pid") != os.getpid():
-            return
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+        with _WRITE_LOCK:
+            info = self.read()
+            if not info or info.get("scan_id") != scan_id or info.get("pid") != os.getpid():
+                return
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def touch_runtime(root: Path, scan_id: str) -> None:
     """Refresh the heartbeat without letting lock errors break persistence."""
     try:
         RuntimeLock(root).heartbeat(scan_id)
+    except Exception:
+        pass
+
+
+def update_runtime_progress(root: Path, scan) -> None:
+    try:
+        RuntimeLock(root).update_progress(
+            scan.scan_id,
+            str(scan.progress.stage),
+            scan.progress.completed,
+            scan.progress.total,
+        )
     except Exception:
         pass

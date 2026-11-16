@@ -23,3 +23,6 @@ class InvalidStateError(ServiceError):
 class RuntimeBusyError(ServiceError):
     """Another scan currently owns the single-flight runtime lock."""
 
+
+class TaskCancelled(Exception):
+    """A cooperative stop request reached a safe task boundary."""

@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 from threading import Event, Lock, Thread
 
-from .errors import RuntimeBusyError
+from .errors import RuntimeBusyError, TaskCancelled
 from .models import ScanError
 from .runtime import RuntimeLock
 from .scanner import ScanOrchestrator
@@ -14,6 +14,7 @@ class TaskManager:
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scan")
         self.lock = Lock()
         self.futures = {}
+        self.stop_events = {}
         self.task_timeout = task_timeout
 
     def submit(self, scan_id: str, agents, resources=None, retry_failed=False, retry_sources=False):
@@ -36,25 +37,46 @@ class TaskManager:
                     "ANOTHER_SCAN_RUNNING",
                     f"任务 {active.get('scan_id', '其他任务')} 正在运行，请等待其结束后再提交。",
                 )
+            stop_event = Event()
             try:
                 future = self.executor.submit(
-                    self._run, scan_id, agents, resources or [], retry_failed, retry_sources, True
+                    self._run,
+                    scan_id,
+                    agents,
+                    resources or [],
+                    retry_failed,
+                    retry_sources,
+                    True,
+                    stop_event,
                 )
             except BaseException:
                 runtime.release(scan_id)
                 self._close_resources(resources or [])
                 raise
-            future.add_done_callback(lambda done: self._finish(scan_id, done, resources))
             self.futures[scan_id] = future
-            return future
+            self.stop_events[scan_id] = stop_event
+        # Register after releasing the manager lock: if the worker already
+        # finished, concurrent.futures runs the callback synchronously.
+        future.add_done_callback(lambda done: self._finish(scan_id, done, resources))
+        return future
 
     def _finish(self, scan_id, future, resources):
         self._close_resources(resources or [])
         with self.lock:
             if self.futures.get(scan_id) is future:
                 self.futures.pop(scan_id, None)
+                self.stop_events.pop(scan_id, None)
 
-    def _run(self, scan_id, agents, resources, retry_failed=False, retry_sources=False, lock_held=False):
+    def _run(
+        self,
+        scan_id,
+        agents,
+        resources,
+        retry_failed=False,
+        retry_sources=False,
+        lock_held=False,
+        cancel_event=None,
+    ):
         runtime = RuntimeLock(self.orchestrator.root)
         if lock_held:
             # The lock was taken in submit. Re-check ownership in case another
@@ -72,6 +94,7 @@ class TaskManager:
                     "ANOTHER_SCAN_RUNNING",
                     "另一个任务正在运行，当前任务未启动。",
                 )
+            cancel_event = cancel_event or Event()
             heartbeat_thread = Thread(
                 target=self._heartbeat_loop,
                 args=(runtime, scan_id, stop_heartbeat),
@@ -107,31 +130,55 @@ class TaskManager:
                 if retry_sources and scan.require_review:
                     scan.analysis_confirmed = False
                 self.orchestrator._save(scan)
-            if scan.status == 'failed':
+            if scan.status in ('failed', 'cancelled'):
+                if scan.status == 'cancelled':
+                    scan.errors = [
+                        error for error in scan.errors if error.code != 'TASK_CANCELLED'
+                    ]
                 scan.status = 'collecting' if scan.progress.stage in ('queued', 'collecting', 'collection_completed') else 'analyzing'
                 self.orchestrator._save(scan)
             if scan.status in ('queued', 'collecting'):
-                self.orchestrator.run_collection(scan_id)
+                self.orchestrator.run_collection(scan_id, cancel_event=cancel_event)
                 scan = self.orchestrator.load(scan_id)
+                if cancel_event.is_set():
+                    raise TaskCancelled()
                 if scan.require_review and not scan.analysis_confirmed:
                     scan.status, scan.progress.stage = 'awaiting_review', 'awaiting_review'
                     self.orchestrator._save(scan)
                     return scan
-                self.orchestrator.prepare_analysis(scan_id, retry_documents=retry_sources)
+                self.orchestrator.prepare_analysis(scan_id, retry_documents=retry_sources, cancel_event=cancel_event)
             elif scan.status == 'awaiting_review':
                 if not scan.analysis_confirmed:
                     return scan
-                self.orchestrator.prepare_analysis(scan_id, retry_documents=True)
+                self.orchestrator.prepare_analysis(scan_id, retry_documents=True, cancel_event=cancel_event)
             elif scan.progress.stage == 'documents':
-                self.orchestrator.prepare_analysis(scan_id)
+                self.orchestrator.prepare_analysis(scan_id, cancel_event=cancel_event)
+            if cancel_event.is_set():
+                raise TaskCancelled()
             self.orchestrator.run_agents(
                 scan_id,
                 *agents,
                 per_announcement_timeout=scan.announcement_timeout,
                 task_timeout=self.task_timeout or scan.analysis_timeout,
                 retry_failed=retry_failed,
+                cancel_event=cancel_event,
             )
+            if cancel_event.is_set():
+                raise TaskCancelled()
             return self.orchestrator.run_export(scan_id)
+        except TaskCancelled:
+            scan = self.orchestrator.load(scan_id)
+            scan.status = "cancelled"
+            scan.errors.append(
+                ScanError(
+                    scope="task",
+                    code="TASK_CANCELLED",
+                    message="任务已按请求停止；已完成检查点保留，可从检查点继续。",
+                    details={"stage": scan.progress.stage, "action": "从检查点继续任务。"},
+                )
+            )
+            self.orchestrator._save(scan)
+            return scan
         except Exception as exc:
             try:
                 scan = self.orchestrator.load(scan_id)
@@ -208,6 +255,29 @@ class TaskManager:
     def running_scan_ids(self) -> list[str]:
         with self.lock:
             return [scan_id for scan_id, future in self.futures.items() if not future.done()]
+
+    def request_stop(self, scan_id: str) -> bool:
+        with self.lock:
+            future = self.futures.get(scan_id)
+            stop_event = self.stop_events.get(scan_id)
+            if future is None or future.done() or stop_event is None:
+                return False
+            stop_event.set()
+            return True
+
+    def can_cancel(self, scan_id: str) -> bool:
+        with self.lock:
+            future = self.futures.get(scan_id)
+            return bool(
+                future is not None
+                and not future.done()
+                and scan_id in self.stop_events
+            )
+
+    def stop_requested(self, scan_id: str) -> bool:
+        with self.lock:
+            event = self.stop_events.get(scan_id)
+            return bool(event and event.is_set())
 
     def shutdown(self):
         self.executor.shutdown(wait=False, cancel_futures=True)

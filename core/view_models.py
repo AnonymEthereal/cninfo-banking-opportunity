@@ -9,6 +9,8 @@ class ScanCapabilities(BaseModel):
     """Server-derived actions so the UI never has to infer task state."""
 
     is_running: bool = False
+    can_cancel: bool = False
+    stop_requested: bool = False
     blocked_by_other_scan: bool = False
     can_confirm: bool = False
     can_save_budget: bool = False
@@ -25,6 +27,11 @@ class RuntimeState(BaseModel):
     scan_id: str | None = None
     started_at: str | None = None
     heartbeat_at: str | None = None
+    elapsed_seconds: int = 0
+    heartbeat_age_seconds: int | None = None
+    stage: str | None = None
+    completed: int = 0
+    total: int = 0
 
 
 

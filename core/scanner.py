@@ -5,6 +5,7 @@ from time import monotonic, sleep
 import os
 import json
 from .config import data_dir
+from .errors import TaskCancelled
 from .models import Announcement, Company, DateRange, Scan, ScanError, ScanStatus, Opportunity, EventExtractionResult
 from .storage import atomic_write_json, read_model
 from parsers.document import parse_document
@@ -25,7 +26,7 @@ class ScanOrchestrator:
     def load(self, scan_id: str) -> Scan:
         return read_model(self.root / "results" / scan_id / "scan.json", Scan)
 
-    def run_collection(self, scan_id: str) -> Scan:
+    def run_collection(self, scan_id: str, cancel_event=None) -> Scan:
         scan = self.load(scan_id)
         if scan.status not in (ScanStatus.QUEUED, ScanStatus.COLLECTING):
             return scan
@@ -45,6 +46,12 @@ class ScanOrchestrator:
         for index, company in enumerate(scan.companies):
             if index and interval:
                 sleep(interval)
+            if cancel_event is not None and cancel_event.is_set():
+                unique = {item.announcement_id: item for item in announcements}
+                atomic_write_json(folder / "announcements.json", {"items": [item.model_dump() for item in unique.values()]})
+                scan.counts.announcements = len(unique)
+                self._save(scan)
+                raise TaskCancelled()
             try:
                 checkpoint = checkpoint_dir / f"{company.stock_code}.json"
                 if checkpoint.exists():
@@ -72,7 +79,7 @@ class ScanOrchestrator:
         self._save(scan)
         return scan
 
-    def prepare_analysis(self, scan_id: str, retry_documents=False) -> Scan:
+    def prepare_analysis(self, scan_id: str, retry_documents=False, cancel_event=None) -> Scan:
         scan = self.load(scan_id)
         scan.status, scan.progress.stage = ScanStatus.ANALYZING, "documents"
         scan.errors = [error for error in scan.errors if error.code != "DOCUMENT_PARSE_FAILED"]
@@ -83,6 +90,13 @@ class ScanOrchestrator:
         scan.progress.total, scan.progress.completed = len(announcements), 0
         last_summary_write = monotonic()
         for index, announcement in enumerate(announcements):
+            if cancel_event is not None and cancel_event.is_set():
+                atomic_write_json(
+                    self.root / "results" / scan.scan_id / "announcements.json",
+                    {"items": [item.model_dump() for item in announcements]},
+                )
+                self._save(scan)
+                raise TaskCancelled()
             try:
                 if announcement.text_path and Path(announcement.text_path).exists() and Path(announcement.text_path).stat().st_size:
                     scan.progress.completed += 1
@@ -115,16 +129,17 @@ class ScanOrchestrator:
             self._save(scan)
         return scan
 
-    def run_agents(self, scan_id, event_agent, classify_agent, marketing_agent, per_announcement_timeout=600, task_timeout=28800, retry_failed=False):
+    def run_agents(self, scan_id, event_agent, classify_agent, marketing_agent, per_announcement_timeout=600, task_timeout=28800, retry_failed=False, cancel_event=None):
         from .batch import run_batch
         scan = self.load(scan_id)
         if scan.status != ScanStatus.ANALYZING:
             return scan
-        return run_batch(self, scan, (event_agent, classify_agent, marketing_agent), per_announcement_timeout, task_timeout, retry_failed=retry_failed)
+        return run_batch(self, scan, (event_agent, classify_agent, marketing_agent), per_announcement_timeout, task_timeout, retry_failed=retry_failed, cancel_event=cancel_event)
 
     def run_export(self, scan_id: str) -> Scan:
         scan = self.load(scan_id)
         scan.status, scan.progress.stage = ScanStatus.EXPORTING, "exporting"
+        self._save(scan)
         result_dir = self.root / "results" / scan.scan_id
         import json
         payload = json.loads((result_dir / "opportunities.json").read_text(encoding="utf-8")) if (result_dir / "opportunities.json").exists() else {"items": []}
@@ -144,8 +159,8 @@ class ScanOrchestrator:
         """Public persistence boundary used by the application service."""
         scan.updated_at = datetime.now().astimezone()
         atomic_write_json(self.root / "results" / scan.scan_id / "scan.json", scan)
-        from .runtime import touch_runtime
-        touch_runtime(self.root, scan.scan_id)
+        from .runtime import update_runtime_progress
+        update_runtime_progress(self.root, scan)
 
     def _save(self, scan: Scan):
         self.save(scan)
