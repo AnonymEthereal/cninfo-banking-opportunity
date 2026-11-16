@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+import os
+from threading import Event, Lock, Thread
 
 from .errors import RuntimeBusyError
 from .models import ScanError
@@ -16,34 +17,68 @@ class TaskManager:
         self.task_timeout = task_timeout
 
     def submit(self, scan_id: str, agents, resources=None, retry_failed=False, retry_sources=False):
+        """Take the single-flight lock, then queue the worker.
+
+        Acquiring here instead of inside the worker closes the window where a
+        second submit (or a page rerun after a deploy) sees no lock owner while
+        the task is already queued. The worker only releases it.
+        """
         with self.lock:
             existing = self.futures.get(scan_id)
             if existing is not None and not existing.done():
                 self._close_resources(resources or [])
                 return existing
-            active = RuntimeLock(self.orchestrator.root).current_active()
-            if active:
+            runtime = RuntimeLock(self.orchestrator.root)
+            if not runtime.acquire(scan_id):
                 self._close_resources(resources or [])
+                active = runtime.read() or {}
                 raise RuntimeBusyError(
                     "ANOTHER_SCAN_RUNNING",
-                    f"任务 {active.get('scan_id')} 正在运行，请等待其结束后再提交。",
+                    f"任务 {active.get('scan_id', '其他任务')} 正在运行，请等待其结束后再提交。",
                 )
-            future = self.executor.submit(
-                self._run, scan_id, agents, resources or [], retry_failed, retry_sources
-            )
-            future.add_done_callback(lambda done: self._close_resources(resources or []))
+            try:
+                future = self.executor.submit(
+                    self._run, scan_id, agents, resources or [], retry_failed, retry_sources, True
+                )
+            except BaseException:
+                runtime.release(scan_id)
+                self._close_resources(resources or [])
+                raise
+            future.add_done_callback(lambda done: self._finish(scan_id, done, resources))
             self.futures[scan_id] = future
             return future
 
-    def _run(self, scan_id, agents, resources, retry_failed=False, retry_sources=False):
+    def _finish(self, scan_id, future, resources):
+        self._close_resources(resources or [])
+        with self.lock:
+            if self.futures.get(scan_id) is future:
+                self.futures.pop(scan_id, None)
+
+    def _run(self, scan_id, agents, resources, retry_failed=False, retry_sources=False, lock_held=False):
         runtime = RuntimeLock(self.orchestrator.root)
-        acquired = runtime.acquire(scan_id)
+        if lock_held:
+            # The lock was taken in submit. Re-check ownership in case another
+            # process replaced or removed it before this worker started.
+            info = runtime.read() or {}
+            owned = info.get("scan_id") == scan_id and info.get("pid") == os.getpid()
+            acquired = owned or runtime.acquire(scan_id)
+        else:
+            acquired = runtime.acquire(scan_id)
+        stop_heartbeat = Event()
+        heartbeat_thread = None
         try:
             if not acquired:
                 raise RuntimeBusyError(
                     "ANOTHER_SCAN_RUNNING",
                     "另一个任务正在运行，当前任务未启动。",
                 )
+            heartbeat_thread = Thread(
+                target=self._heartbeat_loop,
+                args=(runtime, scan_id, stop_heartbeat),
+                name=f"scan-heartbeat-{scan_id}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
             scan = self.orchestrator.load(scan_id)
             if scan.status in ('completed', 'completed_with_errors') and not (retry_failed or retry_sources):
                 return scan
@@ -123,8 +158,21 @@ class TaskManager:
                 pass
             raise
         finally:
+            stop_heartbeat.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1)
             if acquired:
                 runtime.release(scan_id)
+
+    @staticmethod
+    def _heartbeat_loop(runtime: RuntimeLock, scan_id: str, stop: Event) -> None:
+        """Refresh the lock while an agent call runs without saving progress."""
+        interval = max(1.0, runtime.ttl_seconds / 3)
+        while not stop.wait(interval):
+            try:
+                runtime.heartbeat(scan_id)
+            except Exception:
+                return
 
     @staticmethod
     def _close_resources(resources):

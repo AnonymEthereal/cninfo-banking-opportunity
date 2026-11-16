@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from .errors import InvalidStateError, NotFoundError, ServiceError
+from .errors import InvalidStateError, NotFoundError, RuntimeBusyError, ServiceError
 from .models import Announcement, Company, DateRange, Opportunity, Scan, ScanError, ScanStatus
 from .runtime import RuntimeLock
 from .scanner import ScanOrchestrator
@@ -522,6 +522,11 @@ class AppService:
                 retry_failed=retry_failed,
                 retry_sources=retry_sources,
             )
+        except RuntimeBusyError:
+            # Keep the precise code so the UI can say who owns the runtime lock
+            # instead of reporting a generic submission failure.
+            self._close_resources(resources)
+            raise
         except Exception as exc:
             self._close_resources(resources)
             raise ServiceError("TASK_SUBMIT_FAILED", "任务提交失败，请稍后重试。") from exc

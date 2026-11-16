@@ -1,4 +1,6 @@
 from datetime import date, datetime, timedelta
+import time
+from threading import Event
 
 import pytest
 
@@ -133,3 +135,103 @@ def test_run_survives_unreadable_state_file(tmp_path):
     # The runtime lock must not stay held after an unreadable checkpoint.
     assert RuntimeLock(tmp_path).current_active() is None
     manager.shutdown()
+
+
+def test_submit_takes_lock_before_the_worker_starts(tmp_path, monkeypatch):
+    runner = ScanOrchestrator(NoopCollector(), tmp_path)
+    manager = TaskManager(runner)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+    )
+    started, release = Event(), Event()
+
+    def slow_collect(scan_id):
+        started.set()
+        release.wait(timeout=10)
+
+    monkeypatch.setattr(runner, "run_collection", slow_collect)
+    future = manager.submit(scan.scan_id, agents())
+    try:
+        # The lock is already held even though the worker may not have run yet.
+        info = RuntimeLock(tmp_path).current_active()
+        assert info and info["scan_id"] == scan.scan_id
+    finally:
+        release.set()
+    future.result(timeout=10)
+    assert RuntimeLock(tmp_path).current_active() is None
+    manager.shutdown()
+
+
+def test_heartbeat_keeps_lock_fresh_during_long_task(tmp_path, monkeypatch):
+    import core.task_manager as task_manager_module
+
+    real_lock = task_manager_module.RuntimeLock
+    monkeypatch.setattr(
+        task_manager_module, "RuntimeLock", lambda root: real_lock(root, ttl_seconds=1)
+    )
+
+    runner = ScanOrchestrator(NoopCollector(), tmp_path)
+    manager = TaskManager(runner)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+    )
+    started, release = Event(), Event()
+
+    def slow_collect(scan_id):
+        started.set()
+        release.wait(timeout=10)
+
+    monkeypatch.setattr(runner, "run_collection", slow_collect)
+    future = manager.submit(scan.scan_id, agents())
+    try:
+        assert started.wait(timeout=10)
+        first = real_lock(tmp_path).read()["heartbeat_at"]
+        # The heartbeat interval is ttl/3, so one second is enough here.
+        time.sleep(1.6)
+        second = real_lock(tmp_path).read()["heartbeat_at"]
+        assert second > first
+        assert real_lock(tmp_path, ttl_seconds=1).current_active() is not None
+    finally:
+        release.set()
+    future.result(timeout=10)
+    manager.shutdown()
+
+
+def test_finished_task_is_forgotten(tmp_path):
+    runner = ScanOrchestrator(NoopCollector(), tmp_path)
+    manager = TaskManager(runner)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+    )
+    future = manager.submit(scan.scan_id, agents())
+    future.result(timeout=10)
+    assert manager.futures == {}
+    assert manager.running_scan_ids() == []
+    manager.shutdown()
+
+
+def test_service_keeps_busy_code_when_submit_loses_the_race(tmp_path):
+    runner = ScanOrchestrator(NoopCollector(), tmp_path)
+    manager = TaskManager(runner)
+    service = AppService(runner, manager)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+    )
+    scan.status = "analyzing"
+    scan.analysis_mode = "mock"
+    runner.save(scan)
+
+    lock = RuntimeLock(tmp_path)
+    assert lock.acquire("scan_external")
+    try:
+        with pytest.raises(ServiceError) as exc:
+            service.resume_scan(scan.scan_id)
+        assert exc.value.code == "ANOTHER_SCAN_RUNNING"
+    finally:
+        lock.release("scan_external")
+        manager.shutdown()
+

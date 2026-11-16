@@ -182,10 +182,10 @@ def runtime_is_active() -> bool:
 def task_running_in_process(previous_fingerprint: tuple | None) -> bool:
     """Return True when the service from before this rerun still owns a task.
 
-    ``TaskManager`` acquires the runtime lock inside the worker thread, so a
-    just-submitted task is briefly invisible to the lock file. Reloading the
-    backend in that window would leave the running thread with agents from the
-    previous build while batch code sees the new models.
+    The runtime lock is taken during submit, so the lock file normally hides a
+    queued task from a reload. This future check is the second line of defence:
+    it still catches a task whose lock file was removed externally, and keeps
+    backend modules from being reloaded under a live worker thread.
     """
     if previous_fingerprint is None:
         return False
