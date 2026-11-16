@@ -348,6 +348,23 @@ def test_app_reloads_stale_backend_modules(tmp_path):
         assert app.dataframe, "opportunity table should render after reload"
         assert any(metric.label == "商机" for metric in app.metric)
         print("RELOAD_OK")
+
+        # A second reload leaves the cached service holding the previous
+        # view-model classes. The history sidebar must survive writing that
+        # cache, which only works while it stores plain data instead of
+        # Pydantic instances.
+        import importlib
+
+        import streamlit as st
+
+        import core.view_models
+
+        importlib.reload(core.view_models)
+        st.cache_data.clear()
+        app.run()
+        assert not app.exception, app.exception
+        assert any(box.label == "选择历史任务" for box in app.selectbox)
+        print("HISTORY_RELOAD_OK")
         """
     )
     result = subprocess.run(
@@ -362,5 +379,6 @@ def test_app_reloads_stale_backend_modules(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "RELOAD_OK" in result.stdout
+    assert "HISTORY_RELOAD_OK" in result.stdout
 
 

@@ -3,6 +3,7 @@ import inspect
 import math
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -16,6 +17,7 @@ from core.errors import DomainError
 from core.models import Company, DateRange, ScanStatus
 from core.scanner import ScanOrchestrator
 from core.task_manager import TaskManager
+from core.view_models import AnnouncementPage, OpportunityPage, ScanView
 
 st.set_page_config(page_title="上市公司商机雷达", page_icon="◈", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
@@ -182,6 +184,7 @@ def reload_backend() -> None:
     """Reload backend modules in dependency order, then rebind the UI names."""
     global AppService, CninfoCollector, ScanOrchestrator, TaskManager, DomainError
     global Company, DateRange, ScanStatus, default_date_range, render_company_input
+    global AnnouncementPage, OpportunityPage, ScanView
 
     for name in BACKEND_MODULES:
         module = sys.modules.get(name)
@@ -200,6 +203,10 @@ def reload_backend() -> None:
     ScanStatus = sys.modules["core.models"].ScanStatus
     default_date_range = sys.modules["core.calendar"].default_date_range
     render_company_input = sys.modules["core.company_input_ui"].render_company_input
+    view_models = sys.modules["core.view_models"]
+    AnnouncementPage = view_models.AnnouncementPage
+    OpportunityPage = view_models.OpportunityPage
+    ScanView = view_models.ScanView
     st.cache_data.clear()
     app_service.clear()
 
@@ -267,10 +274,10 @@ def render_announcements(scan_id: str, total: int, expanded: bool) -> None:
         try:
             stamp = service.data_stamp(scan_id, "announcements.json")
             page_size = 25
-            meta = cached_announcements(scan_id, keyword, 0, 0, stamp)
+            meta = load_announcements(scan_id, keyword, 0, 0, stamp)
             max_page = max(1, math.ceil(meta.total / page_size))
             page = min(max(int(st.session_state.get(page_key, 1)), 1), max_page)
-            page_data = cached_announcements(
+            page_data = load_announcements(
                 scan_id, keyword, page_size, (page - 1) * page_size, stamp
             )
             if page_data.items:
@@ -323,7 +330,7 @@ def render_opportunity_detail(item) -> None:
 def render_opportunities(scan_id: str, scan) -> None:
     try:
         stamp = service.data_stamp(scan_id, "opportunities.json")
-        facets = cached_opportunities(scan_id, None, None, "", 0, 0, stamp)
+        facets = load_opportunities(scan_id, None, None, "", 0, 0, stamp)
     except DomainError as exc:
         st.error(f"{exc.message}（{exc.code}）")
         return
@@ -362,12 +369,12 @@ def render_opportunities(scan_id: str, scan) -> None:
 
     try:
         page_size = 25
-        summary = cached_opportunities(
+        summary = load_opportunities(
             scan_id, chosen_category, chosen_status, keyword, 0, 0, stamp
         )
         max_page = max(1, math.ceil(summary.total / page_size))
         page = min(max(int(st.session_state.get(page_key, 1)), 1), max_page)
-        page_data = cached_opportunities(
+        page_data = load_opportunities(
             scan_id,
             chosen_category,
             chosen_status,
@@ -783,8 +790,19 @@ if stale:
         st.stop()
     try:
         reload_backend()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Running with a half-reloaded module graph produces confusing pickling
+        # and type errors. Fail closed and ask for a process restart instead.
+        print(f"Backend reload failed: {type(exc).__name__}: {exc}")
+        st.error(
+            "应用刚完成更新，后台模块未能完整重载。请点击右上角 Manage app → Reboot "
+            "重启应用后重试。"
+        )
+        if st.button("清除缓存并重试", key="reload_failed_backend"):
+            app_service.clear()
+            st.cache_data.clear()
+            st.rerun()
+        st.stop()
 
 service = app_service(current_fingerprint)
 if not backend_api_ok():
@@ -797,17 +815,31 @@ if not backend_api_ok():
 
 
 @st.cache_data(ttl=1, show_spinner=False)
-def cached_scan_view(scan_id: str, stamp: tuple[int, int]):
-    return service.get_scan_view(scan_id)
+def cached_scan_view(scan_id: str, stamp: tuple[int, int]) -> dict:
+    # Cache plain data, never Pydantic instances: a backend reload can replace
+    # the view-model class, which makes old instances unpicklable.
+    return service.get_scan_view(scan_id).model_dump(mode="json")
 
 
-def load_scan_view(scan_id: str):
-    return cached_scan_view(scan_id, service.scan_stamp(scan_id))
+def load_scan_view(scan_id: str) -> ScanView:
+    return ScanView.model_validate(cached_scan_view(scan_id, service.scan_stamp(scan_id)))
 
 
 @st.cache_data(ttl=1, show_spinner=False)
-def cached_announcements(scan_id: str, query: str, limit: int, offset: int, stamp: tuple[int, int]):
-    return service.list_announcements(scan_id, query=query, limit=limit, offset=offset)
+def cached_announcements(
+    scan_id: str, query: str, limit: int, offset: int, stamp: tuple[int, int]
+) -> dict:
+    return service.list_announcements(
+        scan_id, query=query, limit=limit, offset=offset
+    ).model_dump(mode="json")
+
+
+def load_announcements(
+    scan_id: str, query: str, limit: int, offset: int, stamp: tuple[int, int]
+) -> AnnouncementPage:
+    return AnnouncementPage.model_validate(
+        cached_announcements(scan_id, query, limit, offset, stamp)
+    )
 
 
 @st.cache_data(ttl=1, show_spinner=False)
@@ -819,7 +851,7 @@ def cached_opportunities(
     limit: int,
     offset: int,
     stamp: tuple[int, int],
-):
+) -> dict:
     return service.list_opportunities(
         scan_id,
         categories=[category] if category else None,
@@ -827,12 +859,37 @@ def cached_opportunities(
         query=query,
         limit=limit,
         offset=offset,
+    ).model_dump(mode="json")
+
+
+def load_opportunities(
+    scan_id: str,
+    category: str | None,
+    analysis_status: str | None,
+    query: str,
+    limit: int,
+    offset: int,
+    stamp: tuple[int, int],
+) -> OpportunityPage:
+    return OpportunityPage.model_validate(
+        cached_opportunities(
+            scan_id, category, analysis_status, query, limit, offset, stamp
+        )
     )
 
 
 @st.cache_data(ttl=5, show_spinner=False)
-def cached_history():
-    return service.list_history(limit=100)
+def cached_history() -> list[dict]:
+    return [item.model_dump(mode="json") for item in service.list_history(limit=100)]
+
+
+def history_label(item: dict) -> str:
+    created = datetime.fromisoformat(item["created_at"])
+    status = STATUS_LABELS.get(item["status"], item["status"])
+    return (
+        f"{created:%m-%d %H:%M} · {item['companies']:,} 家 · "
+        f"{status} · {item['scan_id'][-6:]}"
+    )
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -872,7 +929,7 @@ with st.sidebar:
     st.caption("内部单实例：历史任务共享可见，选择后直接载入结果。")
     try:
         history = cached_history()
-        by_id = {item.scan_id: item for item in history}
+        by_id = {item["scan_id"]: item for item in history}
     except DomainError as exc:
         history, by_id = [], {}
         st.error(f"历史任务读取失败：{exc.message}")
@@ -888,11 +945,7 @@ with st.sidebar:
     st.selectbox(
         "选择历史任务",
         [None] + list(by_id),
-        format_func=lambda key: "请选择任务" if key is None else (
-            f"{by_id[key].created_at:%m-%d %H:%M} · {by_id[key].companies} 家 · "
-            f"{STATUS_LABELS.get(by_id[key].status, by_id[key].status)} · "
-            f"{by_id[key].scan_id[-6:]}"
-        ),
+        format_func=lambda key: "请选择任务" if key is None else history_label(by_id[key]),
         key="history_picker",
         on_change=_switch_history,
         label_visibility="collapsed",
