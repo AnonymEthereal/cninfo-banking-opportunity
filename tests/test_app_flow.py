@@ -107,7 +107,13 @@ def test_app_renders_completed_scan_and_reports(tmp_path, monkeypatch):
     assert not app.exception
     assert any(metric.label == "企业" for metric in app.metric)
     downloads = app.get("download_button")
-    assert any(button.label == "下载 XLSX" for button in downloads)
+    assert any(button.label.startswith("下载 XLSX") for button in downloads)
+    assert any(button.label.startswith("下载 HTML") for button in downloads)
+    # The HTML report opens inside the page instead of only being downloadable.
+    preview = app.toggle(key=f"preview_html_{scan.scan_id}")
+    assert preview.value is True
+    preview.set_value(False).run()
+    assert not app.exception
 
 
 def test_app_renders_running_scan_fragment(tmp_path, monkeypatch):

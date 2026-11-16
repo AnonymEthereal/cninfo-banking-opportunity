@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from collectors.cninfo import CninfoCollector
 from core.app_service import AppService
@@ -455,32 +456,69 @@ def render_budget_inputs(scan_id: str, scan, allow_save: bool, expanded: bool = 
     return int(per_minutes), int(batch_hours)
 
 
+def _format_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size} B"
+
+
 def render_reports(scan_id: str, view) -> None:
     if not view.capabilities.can_download:
         return
-    columns = st.columns(2)
-    if view.reports.get("xlsx"):
+    payloads: dict[str, bytes] = {}
+    for fmt in ("xlsx", "html"):
+        if not view.reports.get(fmt):
+            continue
         try:
-            columns[0].download_button(
-                "下载 XLSX",
-                cached_report(scan_id, "xlsx", service.report_stamp(scan_id, "xlsx")),
-                file_name=f"{scan_id}.xlsx",
-                key=f"download_xlsx_{scan_id}",
-                width="stretch",
-            )
+            payloads[fmt] = cached_report(scan_id, fmt, service.report_stamp(scan_id, fmt))
         except DomainError as exc:
-            columns[0].error(f"{exc.message}（{exc.code}）")
-    if view.reports.get("html"):
-        try:
-            columns[1].download_button(
-                "下载 HTML",
-                cached_report(scan_id, "html", service.report_stamp(scan_id, "html")),
-                file_name=f"{scan_id}.html",
-                key=f"download_html_{scan_id}",
-                width="stretch",
+            st.error(f"{exc.message}（{exc.code}）")
+    if not payloads:
+        return
+
+    with st.container(border=True):
+        st.markdown("#### 报告")
+        st.caption(
+            "HTML 报告可以直接在页面内预览，不必先下载；需要留档或转发时再下载。"
+            "XLSX 与上方商机列表同源，适合在 Excel 中筛选和二次处理。"
+        )
+        preview_col, download_col = st.columns([2, 3])
+        with preview_col:
+            preview = st.toggle(
+                "在线预览 HTML 报告",
+                value=True,
+                key=f"preview_html_{scan_id}",
+                disabled="html" not in payloads,
+                help="预览与下载的 HTML 内容一致；长表格在预览区内滚动。关闭可收起预览。",
             )
-        except DomainError as exc:
-            columns[1].error(f"{exc.message}（{exc.code}）")
+            if "html" not in payloads:
+                st.caption("本次没有生成 HTML 报告。")
+        with download_col:
+            button_cols = st.columns(len(payloads))
+            if "xlsx" in payloads:
+                button_cols[0].download_button(
+                    f"下载 XLSX（{_format_size(len(payloads['xlsx']))}）",
+                    payloads["xlsx"],
+                    file_name=f"{scan_id}.xlsx",
+                    key=f"download_xlsx_{scan_id}",
+                    width="stretch",
+                    icon=":material/table_view:",
+                )
+            if "html" in payloads:
+                index = 1 if "xlsx" in payloads else 0
+                button_cols[index].download_button(
+                    f"下载 HTML（{_format_size(len(payloads['html']))}）",
+                    payloads["html"],
+                    file_name=f"{scan_id}.html",
+                    key=f"download_html_{scan_id}",
+                    width="stretch",
+                    icon=":material/download:",
+                )
+        if preview and "html" in payloads:
+            components.html(payloads["html"].decode("utf-8", errors="replace"), height=640, scrolling=True)
+            st.caption("预览为只读视图，长表格可在框内滚动；来源链接在预览中也可直接点击。")
 
 
 def render_errors(scan) -> None:
