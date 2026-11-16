@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from collectors.cninfo import CninfoCollector
 from core.app_service import AppService
@@ -542,7 +541,11 @@ def render_reports(scan_id: str, view) -> None:
                     icon=":material/download:",
                 )
         if preview and "html" in payloads:
-            components.html(payloads["html"].decode("utf-8", errors="replace"), height=640, scrolling=True)
+            st.iframe(
+                payloads["html"].decode("utf-8", errors="replace"),
+                height=640,
+                alt="HTML 报告预览",
+            )
             st.caption("预览为只读视图，长表格可在框内滚动；来源链接在预览中也可直接点击。")
 
 

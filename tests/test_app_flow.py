@@ -112,6 +112,7 @@ def test_app_renders_completed_scan_and_reports(tmp_path, monkeypatch):
     # The HTML report opens inside the page instead of only being downloadable.
     preview = app.toggle(key=f"preview_html_{scan.scan_id}")
     assert preview.value is True
+    assert app.get("iframe"), "HTML report should render inside the page"
     preview.set_value(False).run()
     assert not app.exception
 
