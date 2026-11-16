@@ -4,6 +4,17 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+def _as_list(value: Any) -> list:
+    """Models sometimes return a single item or null where a list is expected."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
 class Company(BaseModel):
     stock_code: str
     company_name: str
@@ -137,18 +148,38 @@ class Opportunity(BaseModel):
     analysis_status: str = "completed"
     analysis_error: str | None = None
 
+    @field_validator("amount", mode="before")
+    @classmethod
+    def amount_default(cls, value):
+        return {} if value is None else value
+
+    @field_validator("other_amounts", "bank_products", "evidence", "pending_verification", mode="before")
+    @classmethod
+    def list_default(cls, value):
+        return _as_list(value)
+
 class Event(BaseModel):
-    event_id: str
+    event_id: str = ""
     summary: str
     evidence: list[Evidence] = Field(default_factory=list)
     worth_analyzing: bool = True
 
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def list_default(cls, value):
+        return _as_list(value)
+
 class EventExtractionResult(BaseModel):
-    announcement_id: str
+    announcement_id: str = ""
     events: list[Event] = Field(default_factory=list)
 
+    @field_validator("events", mode="before")
+    @classmethod
+    def list_default(cls, value):
+        return _as_list(value)
+
 class OpportunityDraft(BaseModel):
-    event_id: str
+    event_id: str = ""
     category: str
     subcategory: str | None = None
     event_summary: str
@@ -158,8 +189,23 @@ class OpportunityDraft(BaseModel):
     project_name: str | None = None
     evidence: list[Evidence] = Field(default_factory=list)
 
+    @field_validator("amount", mode="before")
+    @classmethod
+    def amount_default(cls, value):
+        return {} if value is None else value
+
+    @field_validator("other_amounts", "evidence", mode="before")
+    @classmethod
+    def list_default(cls, value):
+        return _as_list(value)
+
 class MarketingAnalysis(BaseModel):
     bank_products: list[str] = Field(default_factory=list)
     marketing_direction: str | None = None
     suggested_action: str | None = None
     pending_verification: list[str] = Field(default_factory=list)
+
+    @field_validator("bank_products", "pending_verification", mode="before")
+    @classmethod
+    def list_default(cls, value):
+        return _as_list(value)

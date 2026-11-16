@@ -141,7 +141,7 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 ### Agent 1：事件拆解
 
-输入公告元数据和正文，输出 `EventExtractionResult`。提示词要求只引用正文事实，可输出 0..N 个事件；每个事件包含 `event_id`、`summary`、`evidence[]`、`worth_analyzing`。
+输入公告元数据和正文，输出 `EventExtractionResult`。提示词要求只引用正文事实，可输出 0..N 个事件；每个事件包含 `event_id`、`summary`、`evidence[]`、`worth_analyzing`。只有 `worth_analyzing=true` 的事件需要证据；程序性事件引用不精确时不再拖累同一公告中的真实事件。模型漏写的事件 ID 按顺序补齐，避免商机 ID 冲突。
 
 ### Agent 2：分类与金额
 
@@ -151,7 +151,9 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 仅对采购、投资并购、融资新增、增值四类执行深度提示词；其余类别返回基础识别结果和空营销字段。所有推断写入 `marketing_direction`、`suggested_action` 或 `pending_verification`，不得写入事实字段。
 
-统一 `LLMClient.generate_json(schema, prompt)`：设置超时、最大重试次数和模型名；每次响应先解析 JSON，再执行 Pydantic 校验。连续失败记录 `LLM_TIMEOUT`、`LLM_INVALID_JSON` 或 `SCHEMA_VALIDATION_FAILED`。
+统一 `LLMClient.generate_json(schema, prompt)`：设置超时、最大重试次数和模型名；每次响应先解析 JSON，再执行 Pydantic 校验。响应允许带 Markdown 代码围栏或简短说明文字；结构不符时带着字段错误自动重问一次，仍失败才记录 `LLM_TIMEOUT`、`LLM_INVALID_JSON` 或 `SCHEMA_VALIDATION_FAILED`。
+
+证据校验只忽略排版差异：空白、全角/半角、引号样式、破折号和零宽字符。改写、拼接句子、省略号缩写仍然拒收。拒收后 Agent 会把失败引文回传给模型，要求重新逐字引用一次；第二次仍不通过才把该公告记为分析失败并保留检查点，避免静默接受无法核实的证据。失败详情额外记录 `evidence_preview` 与 `document_chars`，便于判断是模型改写还是正文过长/解析不完整。
 
 ## 8. 去重和幂等
 

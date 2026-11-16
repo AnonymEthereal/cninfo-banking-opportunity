@@ -43,3 +43,20 @@ def test_task_budget_stops_new_calls(tmp_path):
     runner,scan=prepared(tmp_path)
     result=runner.run_agents(scan.scan_id,None,None,None,task_timeout=0)
     assert result.errors[0].code=='TASK_TIMEOUT'
+
+
+def test_evidence_failure_keeps_quote_and_document_size(tmp_path):
+    from agents.live import EvidenceError
+
+    runner, scan = prepared(tmp_path)
+
+    class BadEvidence:
+        def analyze(self, *args):
+            raise EvidenceError('EVIDENCE_MISMATCH', '这句话不在正文里')
+
+    result = runner.run_agents(scan.scan_id, BadEvidence(), None, None)
+    error = result.errors[0]
+    assert error.code == 'EVIDENCE_MISMATCH'
+    assert error.details['evidence_preview'] == '这句话不在正文里'
+    assert error.details['document_chars'] == len('source')
+    assert '逐字校验' in error.details['action']

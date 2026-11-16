@@ -4,12 +4,23 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from time import monotonic
 from .deadline import deadline, remaining
 from .dedup import dedupe_events, dedupe_opportunities
+from .evidence import preview
 from .models import Announcement, EventExtractionResult, OpportunityDraft, MarketingAnalysis, Opportunity, ScanError
 from .storage import atomic_write_json
+
+def _analysis_action(code):
+    if code in ('EVIDENCE_MISMATCH', 'AMOUNT_EVIDENCE_MISMATCH'):
+        return '证据引用未通过逐字校验；系统已自动重试一次。仍失败可重试该公告，或检查公告正文是否完整。'
+    if code in ('SCHEMA_VALIDATION_FAILED', 'LLM_INVALID_JSON'):
+        return '模型返回的结构不符合要求；系统已自动重试一次。仍失败可重试该公告。'
+    if code in ('AGENT_TIMEOUT', 'TASK_TIMEOUT', 'LLM_TIMEOUT'):
+        return '超时可增加预算后重试；其他错误请检查模型配置、服务额度或结构化输出。'
+    return '其他错误请检查模型配置、服务额度或结构化输出。'
 
 def analyze_one(announcement, agents, folder, seconds):
     token = deadline.set(monotonic() + seconds)
     stage = 'read_document'
+    text = ''
     try:
         text = __import__('pathlib').Path(announcement.text_path).read_text(encoding='utf-8')
         stage = 'agent_1'
@@ -41,7 +52,8 @@ def analyze_one(announcement, agents, folder, seconds):
         return {'status': 'completed', 'items': dedupe_opportunities(list({x['opportunity_id']: x for x in items}.values()))}
     except Exception as exc:
         traceback.print_exc()
-        return {'status': 'failed', 'items': [], 'stage': stage, 'error_type': type(exc).__name__, 'error_message': str(exc)[:300], 'code': 'AGENT_TIMEOUT' if isinstance(exc, TimeoutError) else getattr(exc, 'code', 'AGENT_FAILED')}
+        quote = getattr(exc, 'quote', '')
+        return {'status': 'failed', 'items': [], 'stage': stage, 'error_type': type(exc).__name__, 'error_message': str(exc)[:300], 'code': 'AGENT_TIMEOUT' if isinstance(exc, TimeoutError) else getattr(exc, 'code', 'AGENT_FAILED'), 'evidence_preview': preview(quote) if quote else None, 'document_chars': len(text) or None}
     finally:
         deadline.reset(token)
 
@@ -76,7 +88,7 @@ def run_batch(runner, scan, agents, seconds=600, task_seconds=28800, workers=2, 
             return
         items = {o['opportunity_id']: o for r in records.values() for o in r['items']}
         atomic_write_json(folder / 'opportunities.json', {'items': list(items.values())})
-        scan.errors = baseline + [ScanError(scope='analysis', announcement_id=k, code=r['code'], message='公告分析失败；已保存检查点。', details={'stage': r.get('stage', 'agents'), 'error_type': r.get('error_type', 'TimeoutError' if r['code'] == 'TASK_TIMEOUT' else 'Unknown'), 'error_message': r.get('error_message', ''), 'announcement_budget_seconds': seconds, 'batch_budget_seconds': task_seconds, 'action': '超时可增加预算后重试；其他错误请检查模型配置、服务额度或结构化输出。'}) for k,r in records.items() if r['status']=='failed']
+        scan.errors = baseline + [ScanError(scope='analysis', announcement_id=k, code=r['code'], message='公告分析失败；已保存检查点。', details={'stage': r.get('stage', 'agents'), 'error_type': r.get('error_type', 'TimeoutError' if r['code'] == 'TASK_TIMEOUT' else 'Unknown'), 'error_message': r.get('error_message', ''), 'announcement_budget_seconds': seconds, 'batch_budget_seconds': task_seconds, 'action': _analysis_action(r['code']), **({'evidence_preview': r['evidence_preview']} if r.get('evidence_preview') else {}), **({'document_chars': r['document_chars']} if r.get('document_chars') else {})}) for k,r in records.items() if r['status']=='failed']
         scan.counts.analysis_failed = sum(r['status']=='failed' for r in records.values())
         scan.counts.opportunities = len(items)
         scan.progress.completed = len(records)

@@ -102,6 +102,7 @@ BACKEND_MODULES = (
     "core.runtime",
     "core.deadline",
     "core.dedup",
+    "core.evidence",
     "core.llm_client",
     "core.calendar",
     "core.company_directory",
