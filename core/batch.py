@@ -2,11 +2,31 @@ import json
 import traceback
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from time import monotonic
+
+from pydantic import BaseModel
+
 from .deadline import deadline, remaining
 from .dedup import dedupe_events, dedupe_opportunities
 from .evidence import preview
 from .models import Announcement, EventExtractionResult, OpportunityDraft, MarketingAnalysis, Opportunity, ScanError
 from .storage import atomic_write_json
+
+
+def as_model(model, value):
+    """Normalize an agent result into the currently imported model class.
+
+    Mock agents return plain dicts; live agents return instances. A deploy can
+    reload ``core.models`` while an already-submitted task keeps running, so a
+    live agent may hand back an instance of the previous class. Pydantic rejects
+    that with ``Input should be a valid dictionary or instance of ...`` even
+    though the fields are identical, so round-trip through ``model_dump``.
+    """
+    if isinstance(value, model):
+        return value
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    return model.model_validate(value)
+
 
 def _analysis_action(code):
     if code in ('EVIDENCE_MISMATCH', 'AMOUNT_EVIDENCE_MISMATCH'):
@@ -24,7 +44,7 @@ def analyze_one(announcement, agents, folder, seconds):
     try:
         text = __import__('pathlib').Path(announcement.text_path).read_text(encoding='utf-8')
         stage = 'agent_1'
-        events = EventExtractionResult.model_validate(agents[0].analyze(announcement, text))
+        events = as_model(EventExtractionResult, agents[0].analyze(announcement, text))
         events.events = dedupe_events(events.events)
         remaining()
         atomic_write_json(folder / 'agent1.json', events)
@@ -34,12 +54,12 @@ def analyze_one(announcement, agents, folder, seconds):
                 continue
             remaining()
             stage = 'agent_2'
-            draft = OpportunityDraft.model_validate(agents[1].analyze(event, text))
+            draft = as_model(OpportunityDraft, agents[1].analyze(event, text))
             drafts.append(draft.model_dump())
             atomic_write_json(folder / 'agent2.json', {'items': drafts})
             remaining()
             stage = 'agent_3'
-            advice = MarketingAnalysis.model_validate(agents[2].analyze(draft, text))
+            advice = as_model(MarketingAnalysis, agents[2].analyze(draft, text))
             remaining()
             marketing.append(advice.model_dump())
             atomic_write_json(folder / 'agent3.json', {'items': marketing})

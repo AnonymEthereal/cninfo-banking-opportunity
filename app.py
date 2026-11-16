@@ -180,6 +180,23 @@ def runtime_is_active() -> bool:
         return False
 
 
+def task_running_in_process(previous_fingerprint: tuple | None) -> bool:
+    """Return True when the service from before this rerun still owns a task.
+
+    ``TaskManager`` acquires the runtime lock inside the worker thread, so a
+    just-submitted task is briefly invisible to the lock file. Reloading the
+    backend in that window would leave the running thread with agents from the
+    previous build while batch code sees the new models.
+    """
+    if previous_fingerprint is None:
+        return False
+    try:
+        previous = app_service(previous_fingerprint)
+        return bool(previous.task_manager.running_scan_ids())
+    except Exception:
+        return False
+
+
 def reload_backend() -> None:
     """Reload backend modules in dependency order, then rebind the UI names."""
     global AppService, CninfoCollector, ScanOrchestrator, TaskManager, DomainError
@@ -782,7 +799,7 @@ stale = not backend_api_ok() or (
     previous_fingerprint is not None and previous_fingerprint != current_fingerprint
 )
 if stale:
-    if runtime_is_active():
+    if runtime_is_active() or task_running_in_process(previous_fingerprint):
         st.error(
             "应用已更新，但有扫描任务正在后台运行。任务会继续执行并保存结果；"
             "请等待任务结束后点击右上角 Manage app → Reboot 重启应用。"

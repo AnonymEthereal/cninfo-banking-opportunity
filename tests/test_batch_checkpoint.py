@@ -60,3 +60,37 @@ def test_evidence_failure_keeps_quote_and_document_size(tmp_path):
     assert error.details['evidence_preview'] == '这句话不在正文里'
     assert error.details['document_chars'] == len('source')
     assert '逐字校验' in error.details['action']
+
+
+def test_agent_result_from_previous_model_class_is_accepted(tmp_path):
+    """A deploy can reload core.models while a task thread keeps old agents.
+
+    The agent then returns an instance of the previous EventExtractionResult
+    class. Pydantic refuses to treat it as an instance of the new class, so the
+    batch must normalize it instead of failing the announcement.
+    """
+    from pydantic import BaseModel, Field
+
+    class LegacyEvent(BaseModel):
+        event_id: str = ""
+        summary: str
+        evidence: list = Field(default_factory=list)
+        worth_analyzing: bool = True
+
+    class LegacyResult(BaseModel):
+        announcement_id: str = ""
+        events: list[LegacyEvent] = Field(default_factory=list)
+
+    class StaleAgent:
+        def analyze(self, *args):
+            return LegacyResult(announcement_id='a', events=[])
+
+    runner, scan = prepared(tmp_path)
+    result = runner.run_agents(scan.scan_id, StaleAgent(), None, None)
+
+    assert result.counts.analysis_failed == 0
+    checkpoint = (
+        tmp_path / 'results' / scan.scan_id / 'agents' / 'a' / 'result.json'
+    )
+    assert json.loads(checkpoint.read_text(encoding='utf-8'))['status'] == 'completed'
+    assert runner.load(scan.scan_id).progress.completed == 1
