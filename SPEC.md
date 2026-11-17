@@ -30,7 +30,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 - `announcement_id`: 来源公告唯一 ID；同一任务内去重键。
 - `opportunity_id`: 一条独立商机 UUID；一份公告可以产生 0..N 条。
 - 时间均使用 `Asia/Shanghai`；API 时间使用 ISO 8601（带时区），日期使用 `YYYY-MM-DD`。
-- `status`: `queued | collecting | analyzing | exporting | completed | completed_with_errors | failed`。
+- `status`: `queued | collecting | awaiting_review | analyzing | exporting | completed | completed_with_errors | failed | cancelled`。`cancelled` 表示收到协作停止请求，保留检查点且可恢复，不视为成功终态。
 
 ## 3. 前后端一致性约定
 
@@ -48,7 +48,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 1. 上传 Excel；调用名单校验接口。校验失败时禁止开始扫描。
 2. 展示默认日期范围（最近一个工作日至昨日，按中国交易日历计算），允许用户确认后开始扫描。
 3. 创建 `scan_id` 后进入轮询；后端返回阶段和计数，前端不得把 `0` 结果解释为完成，必须等待终态。
-4. 终态为 `completed` 或 `completed_with_errors` 时展示结果和下载按钮；`failed` 时展示可读错误和重试入口。
+4. `completed` 或 `completed_with_errors` 时展示最终结果和下载按钮；`failed` 时展示可读错误和恢复入口；`cancelled` 时展示已保留进度并提供检查点恢复。
 
 ## 5. API 契约
 
@@ -126,7 +126,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 
 ## 7. 状态与错误语义
 
-状态迁移：`queued → collecting → analyzing → exporting → completed|completed_with_errors`；不可逆；未捕获异常进入 `failed`。采集失败、PDF 解析失败、单个 Agent 失败均写入 `errors`，并继续处理其他公告。`completed_with_errors` 仍可下载报告，但报告必须包含异常摘要。
+状态迁移：`queued → collecting → awaiting_review（需确认的 UI 任务）→ analyzing → exporting → completed|completed_with_errors`；旧任务可跳过 `awaiting_review`。未捕获异常进入 `failed`；用户请求协作停止后，在安全边界进入可恢复的 `cancelled`，恢复时从已保存检查点继续。采集失败、PDF 解析失败、单个 Agent 失败均写入 `errors`，并继续处理其他公告。`completed_with_errors` 仍可下载报告，但报告必须包含异常摘要。
 
 错误响应统一格式：
 

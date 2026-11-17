@@ -26,3 +26,7 @@ class RuntimeBusyError(ServiceError):
 
 class TaskCancelled(Exception):
     """A cooperative stop request reached a safe task boundary."""
+
+
+class RuntimeLeaseLostError(Exception):
+    """The task no longer owns the runtime lease and must not persist results."""

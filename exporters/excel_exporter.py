@@ -2,10 +2,14 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+from uuid import uuid4
+from core.url_safety import safe_https_url
 
 HEADERS = ["opportunity_id","announcement_id","stock_code","company_name","announcement_title","publish_date","category","subcategory","event_summary","amount_value","currency","amount_type","amount_undisclosed","bank_products","marketing_direction","suggested_action","evidence","pending_verification","source_url"]
 
-def export_xlsx(opportunities, scan, path: Path):
+def export_xlsx(opportunities, scan, path: Path, lease_guard=None):
+    if lease_guard is not None:
+        lease_guard.assert_owned()
     wb = Workbook(); ws = wb.active; ws.title = "商机明细"
     ws.append(HEADERS)
     for cell in ws[1]:
@@ -15,7 +19,7 @@ def export_xlsx(opportunities, scan, path: Path):
     ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}1"
     for o in opportunities:
         d = o.model_dump(); amount = d["amount"]
-        ws.append([d.get("opportunity_id"), d.get("announcement_id"), d.get("stock_code"), d.get("company_name"), d.get("announcement_title"), str(d.get("publish_date")), d.get("category"), d.get("subcategory"), d.get("event_summary"), amount.get("value"), amount.get("currency"), amount.get("type"), amount.get("undisclosed", False), ", ".join(d.get("bank_products") or []), d.get("marketing_direction"), d.get("suggested_action"), "\n".join(x["text"] for x in d.get("evidence") or []), "\n".join(d.get("pending_verification") or []), d.get("source_url")])
+        ws.append([d.get("opportunity_id"), d.get("announcement_id"), d.get("stock_code"), d.get("company_name"), d.get("announcement_title"), str(d.get("publish_date")), d.get("category"), d.get("subcategory"), d.get("event_summary"), amount.get("value"), amount.get("currency"), amount.get("type"), amount.get("undisclosed", False), ", ".join(d.get("bank_products") or []), d.get("marketing_direction"), d.get("suggested_action"), "\n".join(x["text"] for x in d.get("evidence") or []), "\n".join(d.get("pending_verification") or []), safe_https_url(d.get("source_url")) or ""])
     for row in ws.iter_rows(min_row=2):
         for cell in row: cell.alignment = Alignment(vertical="top", wrap_text=True)
     for index, width in {1:24, 2:22, 3:12, 4:18, 5:32, 6:14, 7:14, 8:16, 9:42, 10:16, 11:10, 12:18, 13:16, 14:28, 15:32, 16:32, 17:48, 18:36, 19:48}.items(): ws.column_dimensions[get_column_letter(index)].width = width
@@ -37,6 +41,19 @@ def export_xlsx(opportunities, scan, path: Path):
                 if isinstance(cell.value, str) and cell.value.startswith("="):
                     cell.data_type = "s"
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    wb.save(temp_path); temp_path.replace(path)
+    temp_path = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+    try:
+        if lease_guard is not None:
+            lease_guard.assert_owned()
+        wb.save(temp_path)
+        if lease_guard is not None:
+            with lease_guard.protect_write():
+                temp_path.replace(path)
+        else:
+            temp_path.replace(path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
     return path

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from .deadline import deadline, remaining
 from .dedup import dedupe_events, dedupe_opportunities
+from .errors import RuntimeLeaseLostError
 from .evidence import preview
 from .models import Announcement, EventExtractionResult, OpportunityDraft, MarketingAnalysis, Opportunity, ScanError
 from .storage import atomic_write_json
@@ -37,32 +38,52 @@ def _analysis_action(code):
         return '超时可增加预算后重试；其他错误请检查模型配置、服务额度或结构化输出。'
     return '其他错误请检查模型配置、服务额度或结构化输出。'
 
-def analyze_one(announcement, agents, folder, seconds):
+def analyze_one(announcement, agents, folder, seconds, runner=None, lease_guard=None):
     token = deadline.set(monotonic() + seconds)
     stage = 'read_document'
     text = ''
     try:
+        if runner is not None:
+            runner._assert_lease(lease_guard)
         text = __import__('pathlib').Path(announcement.text_path).read_text(encoding='utf-8')
         stage = 'agent_1'
+        if runner is not None:
+            runner._assert_lease(lease_guard)
         events = as_model(EventExtractionResult, agents[0].analyze(announcement, text))
+        if runner is not None:
+            runner._assert_lease(lease_guard)
         events.events = dedupe_events(events.events)
         remaining()
-        atomic_write_json(folder / 'agent1.json', events)
+        (runner._write_json if runner is not None else atomic_write_json)(
+            folder / 'agent1.json', events, lease_guard=lease_guard
+        )
         items, drafts, marketing = [], [], []
         for event in events.events:
             if not event.worth_analyzing:
                 continue
             remaining()
             stage = 'agent_2'
+            if runner is not None:
+                runner._assert_lease(lease_guard)
             draft = as_model(OpportunityDraft, agents[1].analyze(event, text))
+            if runner is not None:
+                runner._assert_lease(lease_guard)
             drafts.append(draft.model_dump())
-            atomic_write_json(folder / 'agent2.json', {'items': drafts})
+            (runner._write_json if runner is not None else atomic_write_json)(
+                folder / 'agent2.json', {'items': drafts}, lease_guard=lease_guard
+            )
             remaining()
             stage = 'agent_3'
+            if runner is not None:
+                runner._assert_lease(lease_guard)
             advice = as_model(MarketingAnalysis, agents[2].analyze(draft, text))
+            if runner is not None:
+                runner._assert_lease(lease_guard)
             remaining()
             marketing.append(advice.model_dump())
-            atomic_write_json(folder / 'agent3.json', {'items': marketing})
+            (runner._write_json if runner is not None else atomic_write_json)(
+                folder / 'agent3.json', {'items': marketing}, lease_guard=lease_guard
+            )
             fields = draft.model_dump(exclude={'event_id'})
             fields.update(advice.model_dump())
             items.append(Opportunity(**fields, opportunity_id=f'{announcement.announcement_id}_{event.event_id}',
@@ -70,6 +91,8 @@ def analyze_one(announcement, agents, folder, seconds):
                 company_name=announcement.company_name, publish_date=announcement.publish_date,
                 announcement_title=announcement.title, source_url=announcement.source_url).model_dump())
         return {'status': 'completed', 'items': dedupe_opportunities(list({x['opportunity_id']: x for x in items}.values()))}
+    except RuntimeLeaseLostError:
+        raise
     except Exception as exc:
         traceback.print_exc()
         quote = getattr(exc, 'quote', '')
@@ -88,6 +111,7 @@ def run_batch(
     cancel_event=None,
 ):
     folder = runner.root / 'results' / scan.scan_id
+    lease_guard = runner.lease_guard
     announcements = [Announcement.model_validate(x) for x in json.loads((folder / 'announcements.json').read_text(encoding='utf-8'))['items']]
     records = {}
     pending = []
@@ -97,7 +121,7 @@ def run_batch(
             record = json.loads(checkpoint.read_text(encoding='utf-8'))
             if retry_failed and record['status'] == 'failed' and a.text_path and __import__('pathlib').Path(a.text_path).exists():
                 from uuid import uuid4
-                atomic_write_json(checkpoint.parent / 'history' / f'{uuid4().hex}.json', record)
+                runner._write_json(checkpoint.parent / 'history' / f'{uuid4().hex}.json', record)
                 pending.append(a)
             else:
                 records[a.announcement_id] = record
@@ -116,7 +140,7 @@ def run_batch(
         if not force and now - last_persist < 2:
             return
         items = {o['opportunity_id']: o for r in records.values() for o in r['items']}
-        atomic_write_json(folder / 'opportunities.json', {'items': list(items.values())})
+        runner._write_json(folder / 'opportunities.json', {'items': list(items.values())})
         scan.errors = baseline + [ScanError(scope='analysis', announcement_id=k, code=r['code'], message='公告分析失败；已保存检查点。', details={'stage': r.get('stage', 'agents'), 'error_type': r.get('error_type', 'TimeoutError' if r['code'] == 'TASK_TIMEOUT' else 'Unknown'), 'error_message': r.get('error_message', ''), 'announcement_budget_seconds': seconds, 'batch_budget_seconds': task_seconds, 'action': _analysis_action(r['code']), **({'evidence_preview': r['evidence_preview']} if r.get('evidence_preview') else {}), **({'document_chars': r['document_chars']} if r.get('document_chars') else {})}) for k,r in records.items() if r['status']=='failed']
         scan.counts.analysis_failed = sum(r['status']=='failed' for r in records.values())
         scan.counts.opportunities = len(items)
@@ -132,21 +156,34 @@ def run_batch(
         while active or (
             pending and not (cancel_event is not None and cancel_event.is_set())
         ):
+            runner._assert_lease()
             while pending and len(active) < workers and not (
                 cancel_event is not None and cancel_event.is_set()
             ):
                 a = pending.pop(0)
                 if monotonic() >= end:
                     records[a.announcement_id] = {'status':'failed','items':[], 'code':'TASK_TIMEOUT'}
-                    atomic_write_json(folder/'agents'/a.announcement_id/'result.json',records[a.announcement_id])
+                    runner._write_json(folder/'agents'/a.announcement_id/'result.json',records[a.announcement_id])
                 else:
-                    active[pool.submit(analyze_one, a, agents, folder/'agents'/a.announcement_id, min(seconds,end-monotonic()))] = a
+                    active[pool.submit(
+                        analyze_one,
+                        a,
+                        agents,
+                        folder/'agents'/a.announcement_id,
+                        min(seconds,end-monotonic()),
+                        runner,
+                        lease_guard,
+                    )] = a
             if active:
                 done,_ = wait(active, timeout=1, return_when=FIRST_COMPLETED)
                 for f in done:
                     a = active.pop(f)
                     records[a.announcement_id] = f.result()
-                    atomic_write_json(folder/'agents'/a.announcement_id/'result.json', records[a.announcement_id])
+                    runner._write_json(
+                        folder/'agents'/a.announcement_id/'result.json',
+                        records[a.announcement_id],
+                        lease_guard=lease_guard,
+                    )
             persist()
     persist(force=True)
     if cancel_event is not None and cancel_event.is_set():

@@ -1,10 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor
-import os
 from threading import Event, Lock, Thread
 
-from .errors import RuntimeBusyError, TaskCancelled
+from .errors import RuntimeBusyError, RuntimeLeaseLostError, TaskCancelled
 from .models import ScanError
-from .runtime import RuntimeLock
+from .runtime import RuntimeLeaseGuard, RuntimeLock
 from .scanner import ScanOrchestrator
 
 
@@ -37,6 +36,15 @@ class TaskManager:
                     "ANOTHER_SCAN_RUNNING",
                     f"任务 {active.get('scan_id', '其他任务')} 正在运行，请等待其结束后再提交。",
                 )
+            lock_info = runtime.read() or {}
+            lease_id = lock_info.get("lease_id")
+            if not lease_id:
+                runtime.release(scan_id)
+                self._close_resources(resources or [])
+                raise RuntimeBusyError(
+                    "RUNTIME_LOCK_INVALID",
+                    "运行锁状态无效，未提交任务；请重新加载应用后重试。",
+                )
             stop_event = Event()
             try:
                 future = self.executor.submit(
@@ -48,9 +56,10 @@ class TaskManager:
                     retry_sources,
                     True,
                     stop_event,
+                    lease_id,
                 )
             except BaseException:
-                runtime.release(scan_id)
+                runtime.release(scan_id, lease_id)
                 self._close_resources(resources or [])
                 raise
             self.futures[scan_id] = future
@@ -76,18 +85,25 @@ class TaskManager:
         retry_sources=False,
         lock_held=False,
         cancel_event=None,
+        lease_id=None,
     ):
         runtime = RuntimeLock(self.orchestrator.root)
-        if lock_held:
-            # The lock was taken in submit. Re-check ownership in case another
-            # process replaced or removed it before this worker started.
-            info = runtime.read() or {}
-            owned = info.get("scan_id") == scan_id and info.get("pid") == os.getpid()
-            acquired = owned or runtime.acquire(scan_id)
-        else:
+        if not lock_held:
             acquired = runtime.acquire(scan_id)
+            lease_id = (runtime.read() or {}).get("lease_id")
+            if not lease_id:
+                if acquired:
+                    runtime.release(scan_id)
+                acquired = False
+        else:
+            acquired = bool(lease_id and runtime.owns(scan_id, lease_id))
         stop_heartbeat = Event()
         heartbeat_thread = None
+        lease_guard = (
+            RuntimeLeaseGuard(runtime, scan_id, lease_id)
+            if acquired and lease_id
+            else None
+        )
         try:
             if not acquired:
                 raise RuntimeBusyError(
@@ -95,9 +111,11 @@ class TaskManager:
                     "另一个任务正在运行，当前任务未启动。",
                 )
             cancel_event = cancel_event or Event()
+            lease_guard.assert_owned()
+            self.orchestrator.lease_guard = lease_guard
             heartbeat_thread = Thread(
                 target=self._heartbeat_loop,
-                args=(runtime, scan_id, stop_heartbeat),
+                args=(lease_guard, stop_heartbeat),
                 name=f"scan-heartbeat-{scan_id}",
                 daemon=True,
             )
@@ -106,9 +124,11 @@ class TaskManager:
             if scan.status in ('completed', 'completed_with_errors') and not (retry_failed or retry_sources):
                 return scan
             if retry_failed or retry_sources:
-                from .storage import atomic_write_json
                 from uuid import uuid4
-                atomic_write_json(self.orchestrator.root / 'results' / scan_id / 'history' / f'{uuid4().hex}.json', scan)
+                self.orchestrator._write_json(
+                    self.orchestrator.root / 'results' / scan_id / 'history' / f'{uuid4().hex}.json',
+                    scan,
+                )
                 if retry_sources:
                     from pathlib import Path
                     import shutil
@@ -117,14 +137,17 @@ class TaskManager:
                     source = self.orchestrator.root / 'results' / scan_id
                     for filename in ('announcements.json', 'opportunities.json'):
                         if (source / filename).exists():
+                            lease_guard.assert_owned()
                             shutil.copy2(source / filename, archive / filename)
                     reports = self.orchestrator.root / 'reports' / scan_id
                     if reports.exists():
+                        lease_guard.assert_owned()
                         shutil.copytree(reports, archive / 'reports')
                     for error in scan.errors:
                         if error.code == 'DOCUMENT_PARSE_FAILED' and error.announcement_id:
                             document = self.orchestrator.root / 'announcements' / error.announcement_id
                             if document.exists():
+                                lease_guard.assert_owned()
                                 shutil.copytree(document, archive / 'documents' / error.announcement_id, dirs_exist_ok=True)
                 scan.status = 'collecting' if retry_sources else 'analyzing'
                 if retry_sources and scan.require_review:
@@ -139,6 +162,7 @@ class TaskManager:
                 self.orchestrator._save(scan)
             if scan.status in ('queued', 'collecting'):
                 self.orchestrator.run_collection(scan_id, cancel_event=cancel_event)
+                lease_guard.assert_owned()
                 scan = self.orchestrator.load(scan_id)
                 if cancel_event.is_set():
                     raise TaskCancelled()
@@ -165,8 +189,12 @@ class TaskManager:
             )
             if cancel_event.is_set():
                 raise TaskCancelled()
+            lease_guard.assert_owned()
             return self.orchestrator.run_export(scan_id)
+        except RuntimeBusyError:
+            raise
         except TaskCancelled:
+            lease_guard.assert_owned()
             scan = self.orchestrator.load(scan_id)
             scan.status = "cancelled"
             scan.errors.append(
@@ -179,7 +207,16 @@ class TaskManager:
             )
             self.orchestrator._save(scan)
             return scan
+        except RuntimeLeaseLostError:
+            # A newer owner has taken over. Do not mark the scan failed or write
+            # checkpoints: the new owner is now authoritative.
+            raise
         except Exception as exc:
+            if lease_guard is not None:
+                try:
+                    lease_guard.assert_owned()
+                except RuntimeLeaseLostError:
+                    raise
             try:
                 scan = self.orchestrator.load(scan_id)
             except Exception:
@@ -209,15 +246,18 @@ class TaskManager:
             if heartbeat_thread is not None:
                 heartbeat_thread.join(timeout=1)
             if acquired:
-                runtime.release(scan_id)
+                runtime.release(scan_id, lease_id)
+            if getattr(self.orchestrator, "lease_guard", None) is lease_guard:
+                self.orchestrator.lease_guard = None
 
     @staticmethod
-    def _heartbeat_loop(runtime: RuntimeLock, scan_id: str, stop: Event) -> None:
+    def _heartbeat_loop(lease_guard: RuntimeLeaseGuard, stop: Event) -> None:
         """Refresh the lock while an agent call runs without saving progress."""
-        interval = max(1.0, runtime.ttl_seconds / 3)
+        interval = max(1.0, lease_guard.runtime.ttl_seconds / 3)
         while not stop.wait(interval):
             try:
-                runtime.heartbeat(scan_id)
+                if not lease_guard.heartbeat():
+                    return
             except Exception:
                 return
 

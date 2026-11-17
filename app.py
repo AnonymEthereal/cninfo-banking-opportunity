@@ -16,6 +16,7 @@ from core.errors import DomainError
 from core.models import Company, DateRange, ScanStatus
 from core.scanner import ScanOrchestrator
 from core.task_manager import TaskManager
+from core.url_safety import safe_https_url
 from core.view_models import AnnouncementPage, OpportunityPage, ScanView
 
 st.set_page_config(page_title="上市公司商机雷达", page_icon="◈", layout="wide", initial_sidebar_state="expanded")
@@ -100,6 +101,7 @@ EXPECTED_BACKEND_API = 4
 BACKEND_MODULES = (
     "core.config",
     "core.errors",
+    "core.url_safety",
     "core.models",
     "core.storage",
     "core.runtime",
@@ -203,6 +205,7 @@ def reload_backend() -> None:
     global AppService, CninfoCollector, ScanOrchestrator, TaskManager, DomainError
     global Company, DateRange, ScanStatus, default_date_range, render_company_input
     global AnnouncementPage, OpportunityPage, ScanView
+    global safe_https_url
 
     for name in BACKEND_MODULES:
         module = sys.modules.get(name)
@@ -216,6 +219,7 @@ def reload_backend() -> None:
     ScanOrchestrator = sys.modules["core.scanner"].ScanOrchestrator
     TaskManager = sys.modules["core.task_manager"].TaskManager
     DomainError = sys.modules["core.errors"].DomainError
+    safe_https_url = sys.modules["core.url_safety"].safe_https_url
     Company = sys.modules["core.models"].Company
     DateRange = sys.modules["core.models"].DateRange
     ScanStatus = sys.modules["core.models"].ScanStatus
@@ -341,8 +345,9 @@ def render_opportunity_detail(item) -> None:
                 st.write(f"· {evidence.text}{suffix}")
         st.markdown(f"**待核实**：{'；'.join(item.pending_verification) or '无'}")
         st.caption(f"公告 ID：{item.announcement_id} · 商机 ID：{item.opportunity_id}")
-        if item.source_url.startswith(("https://", "http://")):
-            st.link_button("查看公告原文", item.source_url)
+        source_url = safe_https_url(item.source_url)
+        if source_url:
+            st.link_button("查看公告原文", source_url)
 
 
 def render_opportunities(scan_id: str, scan) -> None:

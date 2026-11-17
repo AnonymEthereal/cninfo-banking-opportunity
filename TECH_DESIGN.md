@@ -73,11 +73,13 @@ tests/
 class ScanStatus(str, Enum):
     QUEUED = "queued"
     COLLECTING = "collecting"
+    AWAITING_REVIEW = "awaiting_review"
     ANALYZING = "analyzing"
     EXPORTING = "exporting"
     COMPLETED = "completed"
     COMPLETED_WITH_ERRORS = "completed_with_errors"
     FAILED = "failed"
+    CANCELLED = "cancelled"  # cooperative stop; resumable from checkpoints
 
 class Scan(BaseModel):
     scan_id: str
@@ -112,14 +114,16 @@ data/announcements/{announcement_id}/text.txt
 `ScanOrchestrator.run(scan_id)` 采用固定顺序：
 
 1. `queued → collecting`：按公司和日期查询公告，保存原始文件、元数据和采集错误。
-2. `collecting → analyzing`：逐份公告提取正文；正文缺失的公告写入错误并跳过 Agent。
-3. 对每份正文串行执行 Agent 1、2、3；每个 Agent 的中间 JSON 单独落盘，便于失败重试和问题定位。
+2. 需要人工确认的新任务在采集后进入 `awaiting_review`；确认后才下载正文并进入 `analyzing`。旧任务可沿原流程继续。
+3. 逐份公告提取正文；正文缺失的公告写入错误并跳过 Agent。对每份正文执行 Agent 1、2、3，并保存中间结果，便于恢复和排查。
 4. `analyzing → exporting`：读取本次任务全部有效 `Opportunity`，生成 XLSX 和 HTML。
-5. 有任何可恢复错误则进入 `completed_with_errors`；没有结果但任务流程正常完成仍为 `completed`，结果数量为 0。
+5. 有可恢复错误则进入 `completed_with_errors`；没有结果但流程正常完成仍为 `completed`。未捕获异常进入 `failed`；协作停止进入可恢复的 `cancelled`。
 
 MVP 使用单进程后台线程执行，UI 通过轮询 `scan.json` 获取状态。线程异常必须由编排器捕获并写入 `failed`，不能让 Streamlit 页面直接崩溃。
 
-运行中的停止是协作式请求：`TaskManager` 为任务维护停止事件，采集、正文处理和公告分析仅在安全边界检查事件，不中断正在进行的 HTTP/模型调用。分析池不再调度新公告，已启动公告完成并写入检查点后，任务状态写为 `cancelled`；恢复时复用成功检查点并清除此前的取消标记。运行锁在提交时获取，心跳线程在长模型调用期间持续刷新；锁文件同时保存阶段与进度，供 UI 展示运行时长、最近心跳和卡顿提示。
+运行中的停止是协作式请求：`TaskManager` 为任务维护停止事件，采集、正文处理和公告分析仅在安全边界检查事件，不中断正在进行的 HTTP/模型调用。分析池不再调度新公告，已启动公告完成并写入检查点后，任务状态写为 `cancelled`；恢复时复用成功检查点并清除此前的取消标记。运行锁在提交时获取，并带有每次运行唯一的租约 ID。心跳、检查点写入和释放锁都会核验租约；旧任务发现失去租约后立即退出，不再更新任务状态。心跳线程会在长模型调用期间续租；锁文件同时保存阶段与进度，供 UI 展示运行时长、最近心跳和卡顿提示。
+
+HTML 与 XLSX 报告以及页面中的原文链接统一校验为有效的 HTTPS 地址。HTML 报告仍启用自动转义；不符合链接规则的来源显示为不可用，不渲染成可点击链接。
 
 ## 6. 采集与解析
 

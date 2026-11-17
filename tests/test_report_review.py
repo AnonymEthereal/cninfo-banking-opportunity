@@ -2,6 +2,7 @@ from datetime import date, datetime
 from openpyxl import load_workbook
 from core.models import Company, DateRange, Scan, ScanError, Opportunity
 from exporters.excel_exporter import export_xlsx
+from core.url_safety import safe_https_url
 from exporters.html_exporter import export_html
 
 
@@ -24,3 +25,51 @@ def test_reports_preserve_evidence_and_escape_content(tmp_path):
     assert "DOCUMENT_PARSE_FAILED" in html
     assert "evidence" in html
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_html_report_only_renders_valid_https_source_links(tmp_path):
+    scan = Scan(
+        scan_id="link-check",
+        companies=[Company(stock_code="000001", company_name="A")],
+        date_range=DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    unsafe_urls = (
+        "javascript:alert(1)",
+        "http://example.com/announcement",
+        "//example.com/announcement",
+        "https://user:secret@example.com/announcement",
+        "https://example.com:bad/announcement",
+        "https://example.com/\n@evil",
+    )
+    for value in unsafe_urls:
+        assert safe_https_url(value) is None
+
+    opportunity = Opportunity(
+        opportunity_id="unsafe-link",
+        announcement_id="ann",
+        stock_code="000001",
+        company_name="企业",
+        publish_date=date(2026, 1, 1),
+        announcement_title="公告",
+        category="其他类",
+        event_summary="事实",
+        source_url="javascript:alert(1)",
+    )
+    html = export_html([opportunity], scan, tmp_path / "unsafe.html").read_text(
+        encoding="utf-8"
+    )
+    assert "原文链接不可用" in html
+    assert "href=" not in html
+    unsafe_workbook = load_workbook(
+        export_xlsx([opportunity], scan, tmp_path / "unsafe.xlsx")
+    )
+    assert unsafe_workbook["商机明细"].cell(2, 19).value in ("", None)
+
+    opportunity.source_url = "https://static.cninfo.com.cn/announcement.pdf"
+    html = export_html([opportunity], scan, tmp_path / "safe.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'href="https://static.cninfo.com.cn/announcement.pdf"' in html
+    assert 'rel="noopener noreferrer"' in html

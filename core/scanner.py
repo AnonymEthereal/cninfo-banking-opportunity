@@ -4,8 +4,10 @@ from pathlib import Path
 from time import monotonic, sleep
 import os
 import json
+import inspect
+from threading import local
 from .config import data_dir
-from .errors import TaskCancelled
+from .errors import RuntimeLeaseLostError, TaskCancelled
 from .models import Announcement, Company, DateRange, Scan, ScanError, ScanStatus, Opportunity, EventExtractionResult
 from .storage import atomic_write_json, read_model
 from parsers.document import parse_document
@@ -15,6 +17,57 @@ from exporters.html_exporter import export_html
 class ScanOrchestrator:
     def __init__(self, collector, root: Path | None = None):
         self.collector, self.root = collector, (root or data_dir())
+        self._lease_context = local()
+
+    @property
+    def lease_guard(self):
+        return getattr(self._lease_context, "guard", None)
+
+    @lease_guard.setter
+    def lease_guard(self, guard) -> None:
+        self._lease_context.guard = guard
+
+    def _assert_lease(self, lease_guard=None) -> None:
+        guard = lease_guard if lease_guard is not None else self.lease_guard
+        if guard is not None:
+            guard.assert_owned()
+
+    def _write_json(self, path: Path, value, lease_guard=None) -> None:
+        guard = lease_guard if lease_guard is not None else self.lease_guard
+        atomic_write_json(path, value, lease_guard=guard)
+
+    def _write_text(self, path: Path, value: str, lease_guard=None) -> None:
+        guard = lease_guard if lease_guard is not None else self.lease_guard
+        self._assert_lease(guard)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_text(value, encoding="utf-8")
+            self._assert_lease(guard)
+            if guard is not None:
+                with guard.protect_write():
+                    os.replace(temporary, path)
+            else:
+                os.replace(temporary, path)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _download(self, announcement: Announcement, destination: Path, lease_guard=None) -> None:
+        guard = lease_guard if lease_guard is not None else self.lease_guard
+        self._assert_lease(guard)
+        download = self.collector.download
+        try:
+            supports_guard = "lease_guard" in inspect.signature(download).parameters
+        except (TypeError, ValueError):
+            supports_guard = False
+        if supports_guard:
+            download(announcement, destination, lease_guard=guard)
+        else:
+            download(announcement, destination)
+            self._assert_lease(guard)
 
     def create(self, companies: list[Company], date_range: DateRange) -> Scan:
         now = datetime.now().astimezone()
@@ -48,7 +101,7 @@ class ScanOrchestrator:
                 sleep(interval)
             if cancel_event is not None and cancel_event.is_set():
                 unique = {item.announcement_id: item for item in announcements}
-                atomic_write_json(folder / "announcements.json", {"items": [item.model_dump() for item in unique.values()]})
+                self._write_json(folder / "announcements.json", {"items": [item.model_dump() for item in unique.values()]})
                 scan.counts.announcements = len(unique)
                 self._save(scan)
                 raise TaskCancelled()
@@ -57,9 +110,12 @@ class ScanOrchestrator:
                 if checkpoint.exists():
                     items = [Announcement.model_validate(item) for item in json.loads(checkpoint.read_text(encoding="utf-8"))["items"]]
                 else:
+                    self._assert_lease()
                     items = self.collector.collect(company, scan.date_range)
-                    atomic_write_json(checkpoint, {"items": [item.model_dump() for item in items]})
+                    self._write_json(checkpoint, {"items": [item.model_dump() for item in items]})
                 announcements.extend(Announcement.model_validate(prior.get(item.announcement_id, item.model_dump())) for item in items)
+            except RuntimeLeaseLostError:
+                raise
             except Exception as exc:
                 scan.counts.collection_failed += 1
                 scan.errors.append(ScanError(scope="company", code="COLLECTION_FAILED", message="公告检索失败。", details={"stock_code": company.stock_code, "company_name": company.company_name, "stage": "collecting", "error_type": type(exc).__name__, "http_status": getattr(getattr(exc, "response", None), "status_code", None), "action": "检查网络或来源服务后重试采集。"}))
@@ -68,14 +124,14 @@ class ScanOrchestrator:
             scan.counts.announcements = len(unique)
             now = monotonic()
             if now - last_summary_write >= 2 or index == len(scan.companies) - 1:
-                atomic_write_json(folder / "announcements.json", {"items": [item.model_dump() for item in unique.values()]})
+                self._write_json(folder / "announcements.json", {"items": [item.model_dump() for item in unique.values()]})
                 last_summary_write = now
             scan.updated_at = datetime.now().astimezone()
             self._save(scan)
         unique = {item.announcement_id: item for item in announcements}
         scan.counts.announcements = len(unique)
         scan.progress.stage, scan.updated_at = "collection_completed", datetime.now().astimezone()
-        atomic_write_json(self.root / "results" / scan.scan_id / "announcements.json", {"items": [v.model_dump() for v in unique.values()]})
+        self._write_json(self.root / "results" / scan.scan_id / "announcements.json", {"items": [v.model_dump() for v in unique.values()]})
         self._save(scan)
         return scan
 
@@ -91,7 +147,7 @@ class ScanOrchestrator:
         last_summary_write = monotonic()
         for index, announcement in enumerate(announcements):
             if cancel_event is not None and cancel_event.is_set():
-                atomic_write_json(
+                self._write_json(
                     self.root / "results" / scan.scan_id / "announcements.json",
                     {"items": [item.model_dump() for item in announcements]},
                 )
@@ -108,19 +164,21 @@ class ScanOrchestrator:
                     file_path = Path(announcement.content_path)
                 else:
                     file_path = self.root / "announcements" / announcement.announcement_id / "source.pdf"
-                    self.collector.download(announcement, file_path)
+                    self._download(announcement, file_path)
                     announcement.content_path = str(file_path)
                 text, pages = parse_document(file_path)
+                self._assert_lease()
                 announcement.text_path = str(self.root / "announcements" / announcement.announcement_id / "text.txt")
-                Path(announcement.text_path).parent.mkdir(parents=True, exist_ok=True)
-                Path(announcement.text_path).write_text(text, encoding="utf-8")
+                self._write_text(Path(announcement.text_path), text)
+            except RuntimeLeaseLostError:
+                raise
             except Exception as exc:
                 scan.counts.document_failed += 1
                 scan.errors.append(ScanError(scope="announcement", announcement_id=announcement.announcement_id, code="DOCUMENT_PARSE_FAILED", message="公告正文获取或解析失败。", details={"stage": "documents", "error_type": type(exc).__name__, "title": announcement.title, "action": "查看原文，重试下载解析；扫描件目前不支持 OCR。"}))
             scan.progress.completed += 1
             now = monotonic()
             if now - last_summary_write >= 2 or index == len(announcements) - 1:
-                atomic_write_json(
+                self._write_json(
                     self.root / "results" / scan.scan_id / "announcements.json",
                     {"items": [item.model_dump() for item in announcements]},
                 )
@@ -147,8 +205,19 @@ class ScanOrchestrator:
         report_dir = self.root / "reports" / scan.scan_id
         report_scan = scan.model_copy(deep=True)
         report_scan.status = ScanStatus.COMPLETED_WITH_ERRORS if scan.errors else ScanStatus.COMPLETED
-        export_xlsx(opportunities, report_scan, report_dir / "report.xlsx")
-        export_html(opportunities, report_scan, report_dir / "report.html")
+        self._assert_lease()
+        export_xlsx(
+            opportunities,
+            report_scan,
+            report_dir / "report.xlsx",
+            lease_guard=self.lease_guard,
+        )
+        export_html(
+            opportunities,
+            report_scan,
+            report_dir / "report.html",
+            lease_guard=self.lease_guard,
+        )
         scan.status = ScanStatus.COMPLETED_WITH_ERRORS if scan.errors else ScanStatus.COMPLETED
         scan.progress.stage = "completed"
         scan.updated_at = datetime.now().astimezone()
@@ -158,9 +227,19 @@ class ScanOrchestrator:
     def save(self, scan: Scan) -> None:
         """Public persistence boundary used by the application service."""
         scan.updated_at = datetime.now().astimezone()
-        atomic_write_json(self.root / "results" / scan.scan_id / "scan.json", scan)
+        atomic_write_json(
+            self.root / "results" / scan.scan_id / "scan.json",
+            scan,
+            lease_guard=self.lease_guard,
+        )
         from .runtime import update_runtime_progress
-        update_runtime_progress(self.root, scan)
+        update_runtime_progress(
+            self.root,
+            scan,
+            lease_id=(
+                self.lease_guard.lease_id if self.lease_guard is not None else None
+            ),
+        )
 
     def _save(self, scan: Scan):
         self.save(scan)

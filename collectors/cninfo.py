@@ -1,6 +1,8 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from hashlib import sha256
+import os
+from uuid import uuid4
 from typing import Any
 try:
     import httpx
@@ -63,9 +65,23 @@ class CninfoCollector:
             raise ValueError("COLLECTOR_MISSING_FIELDS")
         return Announcement(announcement_id="ann_" + sha256(str(raw_id).encode()).hexdigest()[:20], stock_code=company.stock_code, company_name=company.company_name, title=title, publish_date=publish_date, source_url=source_url)
 
-    def download(self, announcement: Announcement, destination):
+    def download(self, announcement: Announcement, destination, lease_guard=None):
         response = self.client.get(announcement.source_url)
         response.raise_for_status()
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(response.content)
+        if lease_guard is not None:
+            lease_guard.assert_owned()
+        temporary = destination.with_name(f"{destination.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(response.content)
+            if lease_guard is not None:
+                with lease_guard.protect_write():
+                    os.replace(temporary, destination)
+            else:
+                os.replace(temporary, destination)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
         return destination
