@@ -37,6 +37,7 @@ def test_end_to_end_multiple_events_and_undisclosed_amount(tmp_path: Path):
     result = json.loads((tmp_path / "results" / scan.scan_id / "opportunities.json").read_text(encoding="utf-8"))
     assert len(result["items"]) == 2
     assert result["items"][0]["amount"]["value"] is None
+    assert result["items"][0]["analysis_outcome"] == "opportunity_identified"
     completed = runner.run_export(scan.scan_id)
     assert completed.status == "completed"
     assert (tmp_path / "reports" / scan.scan_id / "report.xlsx").exists()
@@ -50,3 +51,27 @@ def test_agent_failure_is_visible(tmp_path: Path):
     result = runner.run_agents(scan.scan_id, Broken(), DraftAgent(), Marketing())
     assert result.counts.analysis_failed == 1
     assert result.errors[0].code == "AGENT_FAILED"
+
+
+def test_successful_marketing_analysis_without_a_clear_entry_point_is_explicit(tmp_path: Path):
+    class NoClearEntry:
+        def analyze(self, draft, text):
+            return MarketingAnalysis()
+
+    runner = ScanOrchestrator(FixtureCollector(tmp_path), tmp_path)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 11, 1), end_date=date(2026, 11, 6)),
+    )
+    runner.run_collection(scan.scan_id)
+    runner.prepare_analysis(scan.scan_id)
+    runner.run_agents(scan.scan_id, MultiEventAgent(), DraftAgent(), NoClearEntry())
+
+    result = json.loads(
+        (tmp_path / "results" / scan.scan_id / "opportunities.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result["items"][0]["analysis_outcome"] == "no_clear_entry_point"
+    assert "暂未识别" in result["items"][0]["analysis_summary"]
+    assert result["items"][0]["bank_products"] == []

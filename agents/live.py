@@ -12,6 +12,37 @@ from core.models import EventExtractionResult, MarketingAnalysis, OpportunityDra
 
 CATEGORIES = {"采购类", "销售类", "投资并购类", "融资新增类", "增值类", "报告类", "其他类"}
 
+MARKETING_GUIDANCE = {
+    "采购类": (
+        "围绕采购标的、付款安排、交付周期和交易对手分析。只有公告支持时，考虑设备或项目融资、"
+        "供应链金融、结算、票据或保函；不要仅凭采购金额推断资金缺口。"
+    ),
+    "销售类": (
+        "围绕合同金额、履约进度、客户及回款安排分析。只有披露支持时，考虑收款结算、应收账款融资、"
+        "保理或履约保函；不得把合同金额当成已回款金额，也不得推断买方信用风险。"
+    ),
+    "投资并购类": (
+        "围绕交易结构、出资或支付安排、交易进度和项目资金需求分析。只有披露支持时，考虑并购融资、"
+        "项目融资、资金监管、资本金及交易结算；不得把项目总投资当成实际融资需求。"
+    ),
+    "融资新增类": (
+        "围绕融资工具、披露额度与实际提款、资金用途、期限和到期安排分析。可在证据支持时考虑"
+        "融资结构、债务接续、银团、担保和结算；不得把授信额度写成已提款金额或新增融资需求。"
+    ),
+    "增值类": (
+        "围绕披露资金规模、可用期限、流动性约束和资金管理安排分析。只有证据支持时，考虑存款、"
+        "现金管理或适配的资金增值产品；不得假定资金可自由支配或推断未披露的闲置资金。"
+    ),
+    "报告类": (
+        "只基于本事件和证据中明确披露的经营、财务变化分析可能的结算、现金管理或融资服务切入点。"
+        "本次不做完整的 16 项财务指标分析，不得从单一指标直接推断融资需求。"
+    ),
+    "其他类": (
+        "结合事件类型判断是否存在具体银行业务切入点，例如新设子公司的账户、资本金及结算安排。"
+        "股东或高管变化本身不代表银行需求；没有明确依据时应如实给出暂未识别到切入点。"
+    ),
+}
+
 EVIDENCE_RULES = (
     "Evidence rules: every evidence.text must be a contiguous verbatim substring copied from the "
     "announcement, never a paraphrase. Do not translate, reorder, join separate sentences, or "
@@ -305,13 +336,21 @@ class LiveMarketingAgent:
         self.repairs = max(0, repairs)
 
     def analyze(self, draft, text):
-        if draft.category not in {"采购类", "投资并购类", "融资新增类", "增值类"}:
-            return MarketingAnalysis()
+        guidance = MARKETING_GUIDANCE.get(draft.category)
+        if guidance is None:
+            raise ValueError(f"Unsupported opportunity category: {draft.category}")
         prompt = (
-            "Suggest potential banking products, actions and verification questions. These are "
-            "hypotheses, not confirmed client needs. Use only the structured event facts and "
-            "the attached verbatim evidence. Do not introduce facts absent from them. "
-            f"{draft.model_dump_json()}"
+            "请为这条商机生成有针对性的银行业务分析。结合事件类别给出的分析重点："
+            f"{guidance}\n"
+            "仅依据结构化事件事实和其中的公告原文证据，不得引入未披露事实。明确区分公告事实与业务推断；"
+            "银行产品和营销方向只能作为待验证的潜在线索，不能表述为客户已确认的需求。"
+            "analysis_summary 用一至两句话说明判断依据和建议切入点，并与证据一致。"
+            "如目前没有足够依据识别明确切入点，设置 analysis_outcome='no_clear_entry_point'，"
+            "bank_products 返回空数组、marketing_direction 和 suggested_action 返回 null，"
+            "并在 analysis_summary 说明原因；不要为了填字段而强行推荐产品。"
+            "如识别到有依据的切入点，设置 analysis_outcome='opportunity_identified'，"
+            "给出对应的潜在产品、切入方向、建议动作和关键待核实事项。"
+            f"\n结构化事件：{draft.model_dump_json()}"
         )
         return self.client.generate_json(prompt, MarketingAnalysis)
 

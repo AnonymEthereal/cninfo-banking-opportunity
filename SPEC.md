@@ -1,5 +1,13 @@
 # Listed Company Opportunity Radar — MVP Spec v1.0
 
+## MVP 后续迭代：七类商机深度业务分析
+
+MVP 验收后，营销分析范围由采购、投资并购、融资新增、增值四类扩展到全部七类：采购类、销售类、投资并购类、融资新增类、增值类、报告类、其他类。各类使用针对性的业务分析重点，输出潜在银行产品、营销方向、跟进建议、待核实事项及简要分析结论。
+
+分析必须以结构化事件和公告证据为依据，区分已披露事实与业务推断。没有充分依据时，应记录“暂未识别明确切入点”，不得为了填充字段而强行推荐产品。`analysis_outcome` 区分 `opportunity_identified` 与 `no_clear_entry_point`；旧记录为空表示该字段尚未记录，不回填推断值。
+
+本轮不实现完整的 16 项财务指标提取或分析。报告类只针对事件及公告明确披露的信息生成业务分析。新扫描使用新规则；历史扫描不自动重算。
+
 ## 企业输入增补（2026-11-11）
 
 公告预览增补：新建 UI 任务先检索元数据，进入 awaiting_review，用户确认后才下载正文并分析。持久化 require_review、analysis_confirmed 和时间预算；来源重试后需重新确认。原脚本及旧任务默认保持原流程。默认单篇 600 秒、整批分析 28800 秒，可在页面调整；仍保留底层 HTTP 超时。错误详情展示阶段、类型、可用 HTTP 状态及建议，不输出原始模型响应或密钥。无公告可修改范围另建检索，无需启动模型。
@@ -117,12 +125,13 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
   "publish_date":"2026-11-06", "announcement_title":"...", "category":"采购类", "subcategory":"招标",
   "event_summary":"...", "amount":{"value":1000000000,"currency":"CNY","type":"项目总投资","original_text":"...","undisclosed":false,"verification_status":"verified"},
   "other_amounts":[], "counterparty":null, "project_name":null, "bank_products":[], "marketing_direction":null,
-  "suggested_action":null, "evidence":[{"text":"...","source_page":1}], "pending_verification":["..."],
+  "suggested_action":null, "analysis_summary":null, "analysis_outcome":null,
+  "evidence":[{"text":"...","source_page":1}], "pending_verification":["..."],
   "source_url":"https://...", "analysis_status":"completed", "analysis_error":null
 }
 ```
 
-`category` 枚举：采购类、销售类、投资并购类、融资新增类、增值类、报告类、其他类。深度营销仅对采购、投资并购、融资新增、增值四类生成；其余类的营销字段可为 `null`。金额不得把项目总投资、实际融资、拟申请授信混为同一字段。`currency` 只能依据原文填写；无法明确换算的数值保留为待核实，不能显示成已确认金额。
+`category` 枚举：采购类、销售类、投资并购类、融资新增类、增值类、报告类、其他类。七类均生成有针对性的深度业务分析。`analysis_outcome` 为 `opportunity_identified` 或 `no_clear_entry_point`；`analysis_summary` 说明分析依据和结论。金额不得把项目总投资、实际融资、拟申请授信混为同一字段。`currency` 只能依据原文填写；无法明确换算的数值保留为待核实，不能显示成已确认金额。
 
 金额数值按币种基本单位保存，例如 `1亿元` 对应 `100000000` 元。币种只有公告原文明确说明时才填写，不能仅凭企业位于中国就默认人民币。常见数字和单位可以自动核对；无法确定换算方式的金额保留原文并标记为待核实。`verification_status` 为 `verified`、`pending` 或旧数据的 `null`。
 
@@ -140,7 +149,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 
 - Agent 1 输入 `AnnouncementInput`，输出 `EventExtractionResult(events: 0..N, evidence[])`。
 - Agent 2 输入公告和事件，输出 `OpportunityDraft`，必须给出类别、金额、证据；无披露金额为 `null`。可识别的金额统一换算为币种基本单位，并由程序核对原文数值和单位。无法确定换算方式时标记待核实。
-- Agent 3 输入 `OpportunityDraft` 和事实证据，输出营销字段及 `pending_verification`，不得把推断写成事实。
+- Agent 3 输入 `OpportunityDraft` 和事实证据，按七类各自的业务规则输出潜在产品、营销方向、跟进动作、`analysis_summary`、`analysis_outcome` 及 `pending_verification`，不得把推断写成事实。无充分依据时返回 `no_clear_entry_point`，不强行推荐产品。
 - 每一步均执行 Pydantic 校验；校验失败记录 `SCHEMA_VALIDATION_FAILED`，不伪造默认商机。
 
 ## 9. 验收标准
@@ -148,6 +157,6 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 - 20–50 家名单可校验并启动任务。
 - 真实公告保留来源 URL、标题、日期和正文；采集失败可见。
 - 一份公告可产生多条商机；重复运行不产生重复公告记录。
-- 七类商机可输出，四类有营销分析，其余类保留基础识别。
+- 七类商机均有分类适配的深度业务分析；无明确切入点与分析失败、旧记录未分析能够区分。
 - XLSX 和 HTML 使用同一批 `Opportunity` 数据；空结果、部分失败、下载未就绪均有明确提示。
 - 前端展示的每个状态和数字均可从上述接口响应直接得到。

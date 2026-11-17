@@ -117,3 +117,40 @@ def test_reports_flag_amounts_that_need_manual_verification(tmp_path):
     values = dict(zip(headers, [cell.value for cell in workbook["商机明细"][2]]))
     assert values["amount_verification_status"] == "待核实"
     assert values["currency"] == "币种未明确"
+
+
+def test_reports_show_analysis_outcome_and_summary(tmp_path):
+    scan = Scan(
+        scan_id="analysis-outcome",
+        companies=[Company(stock_code="000001", company_name="A")],
+        date_range=DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 1, 2)),
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    opportunity = Opportunity(
+        opportunity_id="analysis-outcome",
+        announcement_id="ann",
+        stock_code="000001",
+        company_name="企业",
+        publish_date=date(2026, 1, 1),
+        announcement_title="公告",
+        category="销售类",
+        event_summary="披露销售合同",
+        source_url="https://example.com/ann",
+        analysis_outcome="no_clear_entry_point",
+        analysis_summary="公告未披露回款安排，暂无法确认具体结算切入点。",
+    )
+
+    workbook = load_workbook(
+        export_xlsx([opportunity], scan, tmp_path / "analysis-outcome.xlsx")
+    )
+    headers = [cell.value for cell in workbook["商机明细"][1]]
+    values = dict(zip(headers, [cell.value for cell in workbook["商机明细"][2]]))
+    assert values["analysis_outcome"] == "暂未识别明确切入点"
+    assert values["analysis_summary"] == opportunity.analysis_summary
+
+    html = export_html(
+        [opportunity], scan, tmp_path / "analysis-outcome.html"
+    ).read_text(encoding="utf-8")
+    assert "暂未识别明确切入点" in html
+    assert opportunity.analysis_summary in html

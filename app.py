@@ -344,9 +344,20 @@ def render_opportunity_detail(item) -> None:
         if item.amount.value is not None and item.amount.type:
             amount = f"{amount}（{item.amount.type}）"
         st.markdown(f"**金额**：{amount}")
-        st.markdown(f"**银行产品**：{'、'.join(item.bank_products) or '—'}")
-        st.markdown(f"**营销方向**：{item.marketing_direction or '待分析'}")
-        st.markdown(f"**跟进建议**：{item.suggested_action or '待补充'}")
+        no_clear_entry = item.analysis_outcome == "no_clear_entry_point"
+        st.markdown(
+            f"**银行产品**：{'暂未识别明确切入点' if no_clear_entry else '、'.join(item.bank_products) or '—'}"
+        )
+        st.markdown(
+            f"**营销方向**：{item.marketing_direction or ('—' if no_clear_entry else '待分析')}"
+        )
+        st.markdown(
+            f"**跟进建议**：{item.suggested_action or ('暂无明确跟进动作' if no_clear_entry else '待补充')}"
+        )
+        if no_clear_entry:
+            st.info(item.analysis_summary or "基于目前披露，暂未识别出明确的银行业务切入点。")
+        elif item.analysis_summary:
+            st.markdown(f"**分析结论**：{item.analysis_summary}")
         if item.evidence:
             st.markdown("**原文证据**")
             for evidence in item.evidence:

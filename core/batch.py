@@ -81,6 +81,32 @@ def analyze_one(announcement, agents, folder, seconds, runner=None, lease_guard=
             advice = as_model(MarketingAnalysis, agents[2].analyze(draft, text))
             if runner is not None:
                 runner._assert_lease(lease_guard)
+            if advice.analysis_outcome is None:
+                advice.analysis_outcome = (
+                    "opportunity_identified"
+                    if advice.bank_products
+                    or advice.marketing_direction
+                    or advice.suggested_action
+                    else "no_clear_entry_point"
+                )
+            if (
+                advice.analysis_outcome == "opportunity_identified"
+                and not (
+                    advice.bank_products
+                    or advice.marketing_direction
+                    or advice.suggested_action
+                )
+            ):
+                advice.analysis_outcome = "no_clear_entry_point"
+            if advice.analysis_outcome == "no_clear_entry_point":
+                advice.bank_products = []
+                advice.marketing_direction = None
+                advice.suggested_action = None
+            if (
+                advice.analysis_outcome == "no_clear_entry_point"
+                and not advice.analysis_summary
+            ):
+                advice.analysis_summary = "基于目前披露，暂未识别出明确的银行业务切入点。"
             remaining()
             marketing.append(advice.model_dump())
             (runner._write_json if runner is not None else atomic_write_json)(

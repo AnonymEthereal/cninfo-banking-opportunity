@@ -42,13 +42,13 @@ tr:nth-child(even){background:#f8fafc}
 <tr>
 <td><strong>{{ o.company_name }}</strong><br>{{ o.category }}
 {% if o.subcategory %} / {{ o.subcategory }}{% endif %}</td>
-<td>{{ o.event_summary }}<br><span class="muted">跟进：{{ o.suggested_action or '待补充' }}</span></td>
+<td>{{ o.event_summary }}<br><span class="muted">分析：{{ o.analysis_summary or ('暂未识别明确切入点' if o.analysis_outcome == 'no_clear_entry_point' else '待补充') }}</span><br><span class="muted">跟进：{{ o.suggested_action or ('暂无明确跟进动作' if o.analysis_outcome == 'no_clear_entry_point' else '待补充') }}</span></td>
 <td>金额：{% if o.amount.value is none %}{% if o.amount.verification_status == 'pending' %}数值待核实{% elif o.amount.undisclosed %}未披露{% else %}未提供{% endif %}{% else %}{{ o.amount.value }} {{ o.amount.currency or '币种未明确' }}{% endif %}
 {% if o.amount.type %}<br>{{ o.amount.type }}{% endif %}
 {% if o.amount.verification_status == 'pending' and o.amount.value is not none %}<br><span class="muted">金额数值待核实</span>
 {% elif o.amount.verification_status == 'verified' %}<br><span class="muted">数值已与原文核对</span>
 {% elif o.amount.value is not none %}<br><span class="muted">数值未核验</span>{% endif %}</td>
-<td>{{ o.bank_products|join(', ') or '待分析' }}<br>{{ o.marketing_direction or '' }}</td>
+<td>{% if o.analysis_outcome == 'no_clear_entry_point' %}暂未识别明确切入点{% else %}{{ o.bank_products|join(', ') or '待分析' }}{% endif %}<br>{{ o.marketing_direction or '' }}</td>
 <td>{% for e in o.evidence %}{{ e.text }}{% if e.source_page %} [第{{ e.source_page }}页]{% endif %}<br>{% endfor %}
 {% set source_url = safe_https_url(o.source_url) %}
 {% if source_url %}

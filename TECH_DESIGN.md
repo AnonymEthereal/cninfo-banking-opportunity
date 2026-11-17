@@ -107,7 +107,7 @@ data/announcements/{announcement_id}/text.txt
 
 ### 4.3 商机模型
 
-`Opportunity` 按 `SPEC.md` 定义。证据必须包含原文片段，能选时附 PDF 页码；`amount.value` 未披露时为 `null`，`undisclosed=true`。`analysis_status` 允许 `completed | partial | failed`。
+`Opportunity` 按 `SPEC.md` 定义。证据必须包含原文片段，能选时附 PDF 页码；`amount.value` 未披露时为 `null`，`undisclosed=true`。`analysis_status` 允许 `completed | partial | failed`。营销分析增加可选的 `analysis_summary` 和 `analysis_outcome`；旧结果字段缺失时保持 `null`，不推断历史任务曾执行新分析。
 
 ## 5. 扫描编排
 
@@ -155,7 +155,7 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 ### Agent 3：营销分析
 
-仅对采购、投资并购、融资新增、增值四类执行深度提示词；其余类别返回基础识别结果和空营销字段。营销阶段只接收结构化事件、金额与原文证据，不重复发送整篇公告。所有推断写入 `marketing_direction`、`suggested_action` 或 `pending_verification`，不得写入事实字段。
+七类均执行分类适配的深度提示词，分别指导采购、销售、投资并购、融资新增、增值、报告和其他事件的业务分析。Agent 输出 `analysis_summary` 及 `analysis_outcome`（`opportunity_identified | no_clear_entry_point`）；无明确切入点时不强行推荐产品。报告类只分析事件及公告明确披露的信息，本轮不实现完整的 16 项财务指标分析。营销阶段只接收结构化事件、金额与原文证据，不重复发送整篇公告。所有推断写入营销字段，不得写入事实字段。
 
 统一 `LLMClient.generate_json(schema, prompt)`：设置超时、最大重试次数和模型名；每次响应先解析 JSON，再执行 Pydantic 校验。响应允许带 Markdown 代码围栏或简短说明文字；结构不符时带着字段错误自动重问一次，仍失败才记录 `LLM_TIMEOUT`、`LLM_INVALID_JSON` 或 `SCHEMA_VALIDATION_FAILED`。
 
