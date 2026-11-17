@@ -382,3 +382,46 @@ def test_marketing_agent_does_not_receive_the_full_announcement():
     assert result.suggested_action == "核实项目计划"
     assert "PRIVATE_SENTINEL" not in client.prompt
     assert "公司拟采购生产设备" in client.prompt
+
+
+@pytest.mark.parametrize(
+    ("category", "guidance"),
+    [
+        ("采购类", "付款安排"),
+        ("销售类", "回款安排"),
+        ("投资并购类", "交易结构"),
+        ("融资新增类", "实际提款"),
+        ("增值类", "流动性约束"),
+        ("报告类", "财务变化"),
+        ("其他类", "新设子公司"),
+    ],
+)
+def test_marketing_agent_runs_category_specific_analysis(category, guidance):
+    from agents.live import LiveMarketingAgent
+    from core.models import MarketingAnalysis
+
+    class Client:
+        prompt = None
+
+        def generate_json(self, prompt, schema):
+            self.prompt = prompt
+            return MarketingAnalysis(
+                analysis_outcome="no_clear_entry_point",
+                analysis_summary="公告信息不足，暂未识别明确切入点。",
+            )
+
+    client = Client()
+    draft = OpportunityDraft(
+        event_id="e1",
+        category=category,
+        event_summary="测试事件",
+        evidence=[Evidence(text="公告披露的测试事实")],
+    )
+    result = LiveMarketingAgent(client).analyze(
+        draft, "PRIVATE_SENTINEL: 不应发送的完整公告正文"
+    )
+
+    assert result.analysis_outcome == "no_clear_entry_point"
+    assert guidance in client.prompt
+    assert category in client.prompt
+    assert "PRIVATE_SENTINEL" not in client.prompt

@@ -144,6 +144,8 @@ class Opportunity(BaseModel):
     bank_products: list[str] = Field(default_factory=list)
     marketing_direction: str | None = None
     suggested_action: str | None = None
+    analysis_summary: str | None = None
+    analysis_outcome: Literal["opportunity_identified", "no_clear_entry_point"] | None = None
     evidence: list[Evidence] = Field(default_factory=list)
     pending_verification: list[str] = Field(default_factory=list)
     source_url: str
@@ -205,6 +207,8 @@ class MarketingAnalysis(BaseModel):
     bank_products: list[str] = Field(default_factory=list)
     marketing_direction: str | None = None
     suggested_action: str | None = None
+    analysis_summary: str | None = None
+    analysis_outcome: Literal["opportunity_identified", "no_clear_entry_point"] | None = None
     pending_verification: list[str] = Field(default_factory=list)
 
     @field_validator("bank_products", "pending_verification", mode="before")
