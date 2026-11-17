@@ -115,14 +115,16 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 {
   "opportunity_id":"opp_01J...", "announcement_id":"ANN-...", "stock_code":"000001", "company_name":"示例公司",
   "publish_date":"2026-11-06", "announcement_title":"...", "category":"采购类", "subcategory":"招标",
-  "event_summary":"...", "amount":{"value":1000000000,"currency":"CNY","type":"项目总投资","original_text":"...","undisclosed":false},
+  "event_summary":"...", "amount":{"value":1000000000,"currency":"CNY","type":"项目总投资","original_text":"...","undisclosed":false,"verification_status":"verified"},
   "other_amounts":[], "counterparty":null, "project_name":null, "bank_products":[], "marketing_direction":null,
   "suggested_action":null, "evidence":[{"text":"...","source_page":1}], "pending_verification":["..."],
   "source_url":"https://...", "analysis_status":"completed", "analysis_error":null
 }
 ```
 
-`category` 枚举：采购类、销售类、投资并购类、融资新增类、增值类、报告类、其他类。深度营销仅对采购、投资并购、融资新增、增值四类生成；其余类的营销字段可为 `null`。金额不得把项目总投资、实际融资、拟申请授信混为同一字段。
+`category` 枚举：采购类、销售类、投资并购类、融资新增类、增值类、报告类、其他类。深度营销仅对采购、投资并购、融资新增、增值四类生成；其余类的营销字段可为 `null`。金额不得把项目总投资、实际融资、拟申请授信混为同一字段。`currency` 只能依据原文填写；无法明确换算的数值保留为待核实，不能显示成已确认金额。
+
+金额数值按币种基本单位保存，例如 `1亿元` 对应 `100000000` 元。币种只有公告原文明确说明时才填写，不能仅凭企业位于中国就默认人民币。常见数字和单位可以自动核对；无法确定换算方式的金额保留原文并标记为待核实。`verification_status` 为 `verified`、`pending` 或旧数据的 `null`。
 
 ## 7. 状态与错误语义
 
@@ -137,7 +139,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 ## 8. Agent 接口
 
 - Agent 1 输入 `AnnouncementInput`，输出 `EventExtractionResult(events: 0..N, evidence[])`。
-- Agent 2 输入公告和事件，输出 `OpportunityDraft`，必须给出类别、金额、证据；无披露金额为 `null`。
+- Agent 2 输入公告和事件，输出 `OpportunityDraft`，必须给出类别、金额、证据；无披露金额为 `null`。可识别的金额统一换算为币种基本单位，并由程序核对原文数值和单位。无法确定换算方式时标记待核实。
 - Agent 3 输入 `OpportunityDraft` 和事实证据，输出营销字段及 `pending_verification`，不得把推断写成事实。
 - 每一步均执行 Pydantic 校验；校验失败记录 `SCHEMA_VALIDATION_FAILED`，不伪造默认商机。
 

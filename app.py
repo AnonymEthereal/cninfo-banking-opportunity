@@ -107,6 +107,7 @@ BACKEND_MODULES = (
     "core.runtime",
     "core.deadline",
     "core.dedup",
+    "core.amounts",
     "core.evidence",
     "core.llm_client",
     "core.calendar",
@@ -270,6 +271,8 @@ def render_pager(state_key: str, page: int, total_pages: int, summary: str) -> i
 
 def format_amount(item) -> str:
     if item.amount.value is None:
+        if item.amount.verification_status == "pending":
+            return "数值待核实"
         return "未披露"
     value = item.amount.value
     if isinstance(value, float) and value.is_integer():
@@ -277,7 +280,13 @@ def format_amount(item) -> str:
     else:
         text = f"{value:,}"
     currency = f" {item.amount.currency}" if item.amount.currency else ""
-    return f"{text}{currency}"
+    if item.amount.verification_status == "pending":
+        verification = "（数值待核实）"
+    elif item.amount.verification_status is None:
+        verification = "（未核验）"
+    else:
+        verification = ""
+    return f"{text}{currency}{verification}"
 
 
 def render_announcements(scan_id: str, total: int, expanded: bool) -> None:

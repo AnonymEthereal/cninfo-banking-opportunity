@@ -37,6 +37,28 @@ def test_duplicate_keeps_worth_analyzing_and_richer_evidence():
     assert len(kept[0].evidence) == 2
 
 
+def test_keeps_similar_generic_summaries_with_different_counterparties():
+    first = make_event(
+        "e1", "公司签订销售合同", ["公司与甲方签订销售合同。"]
+    )
+    second = make_event(
+        "e2", "公司签订销售合同", ["公司与乙方签订销售合同。"]
+    )
+    assert [event.event_id for event in dedupe_events([first, second])] == ["e1", "e2"]
+
+
+def test_keeps_similar_event_summaries_with_conflicting_amounts():
+    first = make_event("e1", "公司签订100万元销售合同", ["合同金额100万元。"])
+    second = make_event("e2", "公司签订200万元销售合同", ["合同金额200万元。"])
+    assert [event.event_id for event in dedupe_events([first, second])] == ["e1", "e2"]
+
+
+def test_keeps_same_nominal_number_with_different_amount_units():
+    first = make_event("e1", "公司投资100万元", ["公司投资100万元。"])
+    second = make_event("e2", "公司投资100万美元", ["公司投资100万美元。"])
+    assert [event.event_id for event in dedupe_events([first, second])] == ["e1", "e2"]
+
+
 def test_normalize_text_removes_punctuation_and_spaces():
     assert normalize_text(" 本期债券，规模 20 亿元。 ") == normalize_text("本期债券规模20亿元")
 
@@ -70,5 +92,36 @@ def test_keeps_cross_category_opportunities_sharing_evidence():
     quote = "本期债券实际发行规模为20亿元。"
     first = item("o1", "公司发行可续期公司债券20亿元。", [quote], category="融资新增类")
     second = item("o2", "评级机构评定本期债券信用等级为AAA。", [quote], category="报告类")
+    kept = dedupe_opportunities([first, second])
+    assert [entry["opportunity_id"] for entry in kept] == ["o1", "o2"]
+
+
+def test_keeps_same_summary_opportunities_from_different_categories():
+    first = item("o1", "公司获得1000万元项目合同", ["签订项目合同1000万元。"], category="销售类")
+    second = item("o2", "公司获得1000万元项目合同", ["签订项目合同1000万元。"], category="融资新增类")
+    assert [entry["opportunity_id"] for entry in dedupe_opportunities([first, second])] == ["o1", "o2"]
+
+
+def test_keeps_similar_opportunities_with_conflicting_amounts():
+    first = item("o1", "公司签订100万元销售合同", ["合同金额100万元。"], value=100)
+    second = item("o2", "公司签订200万元销售合同", ["合同金额200万元。"], value=200)
+    assert [entry["opportunity_id"] for entry in dedupe_opportunities([first, second])] == ["o1", "o2"]
+
+
+def test_does_not_merge_different_source_events_with_similar_opportunities():
+    first = item(
+        "o1",
+        "公司签订100万元设备采购合同",
+        ["公司签订设备采购合同，金额100万元。"],
+        category="采购类",
+    )
+    second = item(
+        "o2",
+        "公司签订100万元设备采购合同",
+        ["公司与另一供应商签订设备采购合同，金额100万元。"],
+        category="采购类",
+    )
+    first["_source_event_id"] = "event_a"
+    second["_source_event_id"] = "event_b"
     kept = dedupe_opportunities([first, second])
     assert [entry["opportunity_id"] for entry in kept] == ["o1", "o2"]

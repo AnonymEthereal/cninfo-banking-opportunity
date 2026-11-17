@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -120,10 +120,11 @@ class Evidence(BaseModel):
 
 class Amount(BaseModel):
     value: float | None = None
-    currency: str = "CNY"
+    currency: str | None = None
     type: str | None = None
     original_text: str | None = None
     undisclosed: bool = False
+    verification_status: Literal["verified", "pending"] | None = None
 
 
 class Opportunity(BaseModel):

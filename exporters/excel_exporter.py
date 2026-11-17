@@ -5,7 +5,7 @@ from openpyxl.utils import get_column_letter
 from uuid import uuid4
 from core.url_safety import safe_https_url
 
-HEADERS = ["opportunity_id","announcement_id","stock_code","company_name","announcement_title","publish_date","category","subcategory","event_summary","amount_value","currency","amount_type","amount_undisclosed","bank_products","marketing_direction","suggested_action","evidence","pending_verification","source_url"]
+HEADERS = ["opportunity_id","announcement_id","stock_code","company_name","announcement_title","publish_date","category","subcategory","event_summary","amount_value","currency","amount_type","amount_undisclosed","amount_verification_status","bank_products","marketing_direction","suggested_action","evidence","pending_verification","source_url"]
 
 def export_xlsx(opportunities, scan, path: Path, lease_guard=None):
     if lease_guard is not None:
@@ -19,10 +19,20 @@ def export_xlsx(opportunities, scan, path: Path, lease_guard=None):
     ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}1"
     for o in opportunities:
         d = o.model_dump(); amount = d["amount"]
-        ws.append([d.get("opportunity_id"), d.get("announcement_id"), d.get("stock_code"), d.get("company_name"), d.get("announcement_title"), str(d.get("publish_date")), d.get("category"), d.get("subcategory"), d.get("event_summary"), amount.get("value"), amount.get("currency"), amount.get("type"), amount.get("undisclosed", False), ", ".join(d.get("bank_products") or []), d.get("marketing_direction"), d.get("suggested_action"), "\n".join(x["text"] for x in d.get("evidence") or []), "\n".join(d.get("pending_verification") or []), safe_https_url(d.get("source_url")) or ""])
+        currency = amount.get("currency") or (
+            "币种未明确" if amount.get("value") is not None else ""
+        )
+        verification = {
+            "verified": "数值已与原文核对",
+            "pending": "待核实",
+        }.get(
+            amount.get("verification_status"),
+            "未核验" if amount.get("value") is not None else "",
+        )
+        ws.append([d.get("opportunity_id"), d.get("announcement_id"), d.get("stock_code"), d.get("company_name"), d.get("announcement_title"), str(d.get("publish_date")), d.get("category"), d.get("subcategory"), d.get("event_summary"), amount.get("value"), currency, amount.get("type"), amount.get("undisclosed", False), verification, ", ".join(d.get("bank_products") or []), d.get("marketing_direction"), d.get("suggested_action"), "\n".join(x["text"] for x in d.get("evidence") or []), "\n".join(d.get("pending_verification") or []), safe_https_url(d.get("source_url")) or ""])
     for row in ws.iter_rows(min_row=2):
         for cell in row: cell.alignment = Alignment(vertical="top", wrap_text=True)
-    for index, width in {1:24, 2:22, 3:12, 4:18, 5:32, 6:14, 7:14, 8:16, 9:42, 10:16, 11:10, 12:18, 13:16, 14:28, 15:32, 16:32, 17:48, 18:36, 19:48}.items(): ws.column_dimensions[get_column_letter(index)].width = width
+    for index, width in {1:24, 2:22, 3:12, 4:18, 5:32, 6:14, 7:14, 8:16, 9:42, 10:16, 11:16, 12:18, 13:16, 14:18, 15:28, 16:32, 17:32, 18:48, 19:36, 20:48}.items(): ws.column_dimensions[get_column_letter(index)].width = width
     summary = wb.create_sheet("扫描概览")
     summary.append(["字段", "值"])
     summary.append(["扫描 ID", scan.scan_id]); summary.append(["状态", str(scan.status)])

@@ -32,6 +32,8 @@ def as_model(model, value):
 def _analysis_action(code):
     if code in ('EVIDENCE_MISMATCH', 'AMOUNT_EVIDENCE_MISMATCH'):
         return '证据引用未通过逐字校验；系统已自动重试一次。仍失败可重试该公告，或检查公告正文是否完整。'
+    if code in ('AMOUNT_VALUE_MISMATCH', 'AMOUNT_CURRENCY_MISMATCH'):
+        return '金额数值或币种与原文无法对应；系统已自动重试一次。仍无法确认时请人工核对原文后再处理。'
     if code in ('SCHEMA_VALIDATION_FAILED', 'LLM_INVALID_JSON'):
         return '模型返回的结构不符合要求；系统已自动重试一次。仍失败可重试该公告。'
     if code in ('AGENT_TIMEOUT', 'TASK_TIMEOUT', 'LLM_TIMEOUT'):
@@ -86,11 +88,18 @@ def analyze_one(announcement, agents, folder, seconds, runner=None, lease_guard=
             )
             fields = draft.model_dump(exclude={'event_id'})
             fields.update(advice.model_dump())
-            items.append(Opportunity(**fields, opportunity_id=f'{announcement.announcement_id}_{event.event_id}',
+            item = Opportunity(**fields, opportunity_id=f'{announcement.announcement_id}_{event.event_id}',
                 announcement_id=announcement.announcement_id, stock_code=announcement.stock_code,
                 company_name=announcement.company_name, publish_date=announcement.publish_date,
-                announcement_title=announcement.title, source_url=announcement.source_url).model_dump())
-        return {'status': 'completed', 'items': dedupe_opportunities(list({x['opportunity_id']: x for x in items}.values()))}
+                announcement_title=announcement.title, source_url=announcement.source_url).model_dump()
+            item["_source_event_id"] = event.event_id
+            items.append(item)
+        deduplicated = dedupe_opportunities(
+            list({x['opportunity_id']: x for x in items}.values())
+        )
+        for item in deduplicated:
+            item.pop("_source_event_id", None)
+        return {'status': 'completed', 'items': deduplicated}
     except RuntimeLeaseLostError:
         raise
     except Exception as exc:

@@ -163,3 +163,222 @@ def test_amount_uses_same_source_matching():
         Event(event_id="e", summary="投资"), "投资 100\n万元"
     )
     assert result.amount.value == 1000000
+
+
+def test_classify_agent_repairs_amount_value_with_wrong_unit_conversion():
+    class Client:
+        calls = 0
+
+        def generate_json(self, prompt, schema):
+            self.calls += 1
+            if self.calls == 1:
+                assert "100000000" in prompt
+                value = 10000000
+            else:
+                value = 100000000
+            return OpportunityDraft(
+                event_id="ignored",
+                category="投资并购类",
+                event_summary="项目投资",
+                evidence=[Evidence(text="人民币1亿元")],
+                amount={
+                    "value": value,
+                    "currency": "CNY",
+                    "type": "项目投资",
+                    "original_text": "人民币1亿元",
+                },
+            )
+
+    client = Client()
+    result = LiveClassifyAgent(client).analyze(
+        Event(event_id="e1", summary="项目投资"),
+        "公司拟投资人民币1亿元建设基地。",
+    )
+    assert client.calls == 2
+    assert result.amount.value == 100000000
+    assert result.amount.currency == "CNY"
+
+
+def test_persistent_amount_mismatch_is_retained_as_pending_not_false_value():
+    class Client:
+        calls = 0
+
+        def generate_json(self, prompt, schema):
+            self.calls += 1
+            return OpportunityDraft(
+                event_id="ignored",
+                category="投资并购类",
+                event_summary="项目投资",
+                evidence=[Evidence(text="人民币1亿元")],
+                amount={
+                    "value": 10000000,
+                    "currency": "CNY",
+                    "type": "项目投资",
+                    "original_text": "人民币1亿元",
+                },
+            )
+
+    client = Client()
+    result = LiveClassifyAgent(client).analyze(
+        Event(event_id="e1", summary="项目投资"),
+        "公司拟投资人民币1亿元建设基地。",
+    )
+    assert client.calls == 2
+    assert result.amount.value is None
+    assert result.amount.undisclosed is False
+    assert result.amount.verification_status == "pending"
+    assert result.amount.original_text == "人民币1亿元"
+
+
+def test_classify_agent_does_not_assume_cny_from_bare_yuan_unit():
+    class Client:
+        def generate_json(self, prompt, schema):
+            return OpportunityDraft(
+                event_id="ignored",
+                category="投资并购类",
+                event_summary="项目投资",
+                evidence=[Evidence(text="投资100万元")],
+                amount={
+                    "value": 1000000,
+                    "currency": "CNY",
+                    "type": "项目投资",
+                    "original_text": "投资100万元",
+                },
+            )
+
+    result = LiveClassifyAgent(Client()).analyze(
+        Event(event_id="e1", summary="项目投资"), "公司投资100万元建设基地。"
+    )
+    assert result.amount.currency is None
+
+
+def test_unrecognized_amount_notation_is_marked_for_review():
+    class Client:
+        def generate_json(self, prompt, schema):
+            return OpportunityDraft(
+                event_id="ignored",
+                category="投资并购类",
+                event_summary="项目投资",
+                evidence=[Evidence(text="人民币一亿元")],
+                amount={
+                    "value": 100000000,
+                    "currency": "CNY",
+                    "type": "项目投资",
+                    "original_text": "人民币一亿元",
+                },
+            )
+
+    result = LiveClassifyAgent(Client()).analyze(
+        Event(event_id="e1", summary="项目投资"),
+        "公司拟投资人民币一亿元建设基地。",
+    )
+    assert result.amount.value == 100000000
+    assert result.amount.currency is None
+    assert result.amount.verification_status == "pending"
+
+
+def test_undecodable_chinese_amount_is_not_reported_as_undisclosed():
+    class Client:
+        def generate_json(self, prompt, schema):
+            return OpportunityDraft(
+                event_id="ignored",
+                category="投资并购类",
+                event_summary="项目投资",
+                evidence=[Evidence(text="投资人民币一亿元")],
+                amount={
+                    "value": None,
+                    "currency": "CNY",
+                    "type": "项目投资",
+                    "original_text": "投资人民币一亿元",
+                    "undisclosed": True,
+                },
+            )
+
+    result = LiveClassifyAgent(Client()).analyze(
+        Event(event_id="e1", summary="项目投资"),
+        "公司拟投资人民币一亿元建设基地。",
+    )
+    assert result.amount.value is None
+    assert result.amount.undisclosed is False
+    assert result.amount.currency is None
+    assert result.amount.verification_status == "pending"
+
+
+def test_classify_agent_repairs_currency_conflicting_with_source():
+    class Client:
+        calls = 0
+
+        def generate_json(self, prompt, schema):
+            self.calls += 1
+            currency = "CNY" if self.calls == 1 else "USD"
+            return OpportunityDraft(
+                event_id="ignored",
+                category="融资新增类",
+                event_summary="美元借款",
+                evidence=[Evidence(text="美元100万元")],
+                amount={
+                    "value": 1000000,
+                    "currency": currency,
+                    "type": "借款",
+                    "original_text": "美元100万元",
+                },
+            )
+
+    client = Client()
+    result = LiveClassifyAgent(client).analyze(
+        Event(event_id="e1", summary="美元借款"),
+        "公司获得美元100万元借款。",
+    )
+    assert client.calls == 2
+    assert result.amount.currency == "USD"
+
+
+def test_persistent_currency_mismatch_is_retained_as_pending():
+    class Client:
+        def generate_json(self, prompt, schema):
+            return OpportunityDraft(
+                event_id="ignored",
+                category="融资新增类",
+                event_summary="美元借款",
+                evidence=[Evidence(text="美元100万元")],
+                amount={
+                    "value": 1000000,
+                    "currency": "CNY",
+                    "type": "借款",
+                    "original_text": "美元100万元",
+                },
+            )
+
+    result = LiveClassifyAgent(Client()).analyze(
+        Event(event_id="e1", summary="美元借款"),
+        "公司获得美元100万元借款。",
+    )
+    assert result.amount.value == 1000000
+    assert result.amount.currency is None
+    assert result.amount.verification_status == "pending"
+
+
+def test_marketing_agent_does_not_receive_the_full_announcement():
+    from agents.live import LiveMarketingAgent
+    from core.models import MarketingAnalysis
+
+    class Client:
+        prompt = None
+
+        def generate_json(self, prompt, schema):
+            self.prompt = prompt
+            return MarketingAnalysis(suggested_action="核实项目计划")
+
+    client = Client()
+    draft = OpportunityDraft(
+        event_id="e1",
+        category="采购类",
+        event_summary="采购生产设备",
+        evidence=[Evidence(text="公司拟采购生产设备")],
+    )
+    result = LiveMarketingAgent(client).analyze(
+        draft, "PRIVATE_SENTINEL: 不应被营销阶段重复发送的长公告正文"
+    )
+    assert result.suggested_action == "核实项目计划"
+    assert "PRIVATE_SENTINEL" not in client.prompt
+    assert "公司拟采购生产设备" in client.prompt

@@ -151,11 +151,11 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 ### Agent 2：分类与金额
 
-输入公告和事件，输出 `OpportunityDraft`。使用枚举约束七大类；金额由 `value/currency/type/original_text/undisclosed` 组成。模型不得将不同金额类型合并。
+输入公告和事件，输出 `OpportunityDraft`。使用枚举约束七大类；金额由 `value/currency/type/original_text/undisclosed/verification_status` 组成。数值统一按币种基本单位表达；只有原文明确币种时才填写 `currency`。系统对常见数字和单位做确定性换算校验，不支持或存在歧义的写法标记为 `pending`，不猜测币种。
 
 ### Agent 3：营销分析
 
-仅对采购、投资并购、融资新增、增值四类执行深度提示词；其余类别返回基础识别结果和空营销字段。所有推断写入 `marketing_direction`、`suggested_action` 或 `pending_verification`，不得写入事实字段。
+仅对采购、投资并购、融资新增、增值四类执行深度提示词；其余类别返回基础识别结果和空营销字段。营销阶段只接收结构化事件、金额与原文证据，不重复发送整篇公告。所有推断写入 `marketing_direction`、`suggested_action` 或 `pending_verification`，不得写入事实字段。
 
 统一 `LLMClient.generate_json(schema, prompt)`：设置超时、最大重试次数和模型名；每次响应先解析 JSON，再执行 Pydantic 校验。响应允许带 Markdown 代码围栏或简短说明文字；结构不符时带着字段错误自动重问一次，仍失败才记录 `LLM_TIMEOUT`、`LLM_INVALID_JSON` 或 `SCHEMA_VALIDATION_FAILED`。
 
@@ -165,6 +165,7 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 - 同一 `scan_id` 内公告按 `announcement_id` 去重。
 - 商机按 `opportunity_id` 去重；生成 ID 时使用公告 ID + 事件 ID 的稳定哈希，避免重复运行产生重复记录。
+- 事件和商机去重不能只看摘要相似度；跨类别不合并，摘要相似时还要核对金额单位、证据或其他事实锚点。不同事件 ID 生成的商机优先分别保留。
 - 创建扫描前可计算输入指纹；相同公司和日期范围仍创建新 `scan_id`，但复用已保存公告文件，减少重复下载。
 - 报告写入临时文件后改名，防止 UI 下载到半成品。
 
