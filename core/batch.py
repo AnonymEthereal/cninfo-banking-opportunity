@@ -44,6 +44,9 @@ def analyze_one(announcement, agents, folder, seconds, runner=None, lease_guard=
     token = deadline.set(monotonic() + seconds)
     stage = 'read_document'
     text = ''
+    raw_event_count = 0
+    unique_event_count = 0
+    analyzable_event_count = 0
     try:
         if runner is not None:
             runner._assert_lease(lease_guard)
@@ -54,7 +57,12 @@ def analyze_one(announcement, agents, folder, seconds, runner=None, lease_guard=
         events = as_model(EventExtractionResult, agents[0].analyze(announcement, text))
         if runner is not None:
             runner._assert_lease(lease_guard)
+        raw_event_count = len(events.events)
         events.events = dedupe_events(events.events)
+        unique_event_count = len(events.events)
+        analyzable_event_count = sum(
+            bool(event.worth_analyzing) for event in events.events
+        )
         remaining()
         (runner._write_json if runner is not None else atomic_write_json)(
             folder / 'agent1.json', events, lease_guard=lease_guard
@@ -123,15 +131,38 @@ def analyze_one(announcement, agents, folder, seconds, runner=None, lease_guard=
         deduplicated = dedupe_opportunities(
             list({x['opportunity_id']: x for x in items}.values())
         )
+        merged_opportunity_count = max(0, len(items) - len(deduplicated))
         for item in deduplicated:
             item.pop("_source_event_id", None)
-        return {'status': 'completed', 'items': deduplicated}
+        return {
+            'status': 'completed',
+            'items': deduplicated,
+            'raw_event_count': raw_event_count,
+            'unique_event_count': unique_event_count,
+            'analyzable_event_count': analyzable_event_count,
+            'opportunity_candidate_count': len(items),
+            'merged_opportunity_count': merged_opportunity_count,
+        }
     except RuntimeLeaseLostError:
         raise
     except Exception as exc:
         traceback.print_exc()
         quote = getattr(exc, 'quote', '')
-        return {'status': 'failed', 'items': [], 'stage': stage, 'error_type': type(exc).__name__, 'error_message': str(exc)[:300], 'code': 'AGENT_TIMEOUT' if isinstance(exc, TimeoutError) else getattr(exc, 'code', 'AGENT_FAILED'), 'evidence_preview': preview(quote) if quote else None, 'document_chars': len(text) or None}
+        return {
+            'status': 'failed',
+            'items': [],
+            'stage': stage,
+            'error_type': type(exc).__name__,
+            'error_message': str(exc)[:300],
+            'code': 'AGENT_TIMEOUT' if isinstance(exc, TimeoutError) else getattr(exc, 'code', 'AGENT_FAILED'),
+            'evidence_preview': preview(quote) if quote else None,
+            'document_chars': len(text) or None,
+            'raw_event_count': raw_event_count,
+            'unique_event_count': unique_event_count,
+            'analyzable_event_count': analyzable_event_count,
+            'opportunity_candidate_count': 0,
+            'merged_opportunity_count': 0,
+        }
     finally:
         deadline.reset(token)
 
@@ -163,7 +194,16 @@ def run_batch(
         elif a.text_path and __import__('pathlib').Path(a.text_path).exists():
             pending.append(a)
         else:
-            records[a.announcement_id] = {'status': 'skipped', 'items': []}
+            records[a.announcement_id] = {
+                'status': 'skipped',
+                'items': [],
+                'raw_event_count': 0,
+                'unique_event_count': 0,
+                'analyzable_event_count': 0,
+                'opportunity_candidate_count': 0,
+                'merged_opportunity_count': 0,
+                'code': 'DOCUMENT_UNAVAILABLE',
+            }
     scan.status = 'analyzing'
     scan.progress.total = len(announcements)
     baseline = [e for e in scan.errors if e.scope != 'analysis']
@@ -196,6 +236,81 @@ def run_batch(
         runner._write_json(
             folder / 'non_opportunities.json',
             {'items': list(non_opportunities.values())},
+        )
+        announcement_analysis = []
+        for announcement in announcements:
+            record = records.get(announcement.announcement_id)
+            if record is None:
+                record = {}
+            items = record.get('items', [])
+            leads = sum(
+                item.get('analysis_outcome') != 'no_clear_entry_point'
+                for item in items
+            )
+            non_leads = sum(
+                item.get('analysis_outcome') == 'no_clear_entry_point'
+                for item in items
+            )
+            raw_count = record.get('raw_event_count')
+            unique_count = record.get('unique_event_count')
+            analyzable_count = record.get('analyzable_event_count')
+            candidate_count = record.get('opportunity_candidate_count')
+            merged_count = record.get('merged_opportunity_count')
+            status = record.get('status', 'unknown')
+            if status == 'failed':
+                result_status = '分析失败'
+                reason = f"事件分析失败（{record.get('code', 'AGENT_FAILED')}），请查看异常明细。"
+            elif status == 'skipped':
+                result_status = '正文不可用'
+                reason = '公告正文未能解析，未进入事件拆解；请查看异常明细。'
+            elif announcement.announcement_id not in records:
+                result_status = '尚未进入分析'
+                reason = '任务停止或结束前，该公告尚未进入事件分析。'
+            elif 'raw_event_count' not in record:
+                result_status = '历史记录未保存事件统计'
+                reason = '该历史检查点未记录事件拆解统计，无法从当前数据判断未生成商机的具体原因。'
+            elif leads:
+                result_status = '已识别商机'
+                reason = '已识别出可跟进商机。'
+            elif non_leads:
+                result_status = '已分析，未形成商机'
+                reason = '事件已完成分类和深度分析，但未识别明确的银行业务切入点。'
+            elif unique_count == 0:
+                result_status = '未识别到事件'
+                reason = '事件拆解未发现可独立分析的业务事件。'
+            elif not analyzable_count:
+                result_status = '仅程序性或非可营销事件'
+                reason = '拆解出的事件均未进入商机分析，属于程序性或非可营销事项。'
+            else:
+                result_status = '已分析，无商机记录'
+                reason = '存在可分析事件，但未生成可展示的商机记录；请复核分析检查点。'
+            announcement_analysis.append(
+                {
+                    'announcement_id': announcement.announcement_id,
+                    'stock_code': announcement.stock_code,
+                    'company_name': announcement.company_name,
+                    'publish_date': str(announcement.publish_date),
+                    'announcement_title': announcement.title,
+                    'source_url': announcement.source_url,
+                    'raw_event_count': raw_count,
+                    'unique_event_count': unique_count,
+                    'duplicate_event_count': (
+                        max(0, raw_count - unique_count)
+                        if raw_count is not None and unique_count is not None
+                        else None
+                    ),
+                    'analyzable_event_count': analyzable_count,
+                    'opportunity_candidate_count': candidate_count,
+                    'merged_opportunity_count': merged_count,
+                    'opportunity_count': leads,
+                    'non_opportunity_count': non_leads,
+                    'status': result_status,
+                    'reason': reason,
+                }
+            )
+        runner._write_json(
+            folder / 'announcement_analysis.json',
+            {'items': announcement_analysis},
         )
         scan.errors = baseline + [ScanError(scope='analysis', announcement_id=k, code=r['code'], message='公告分析失败；已保存检查点。', details={'stage': r.get('stage', 'agents'), 'error_type': r.get('error_type', 'TimeoutError' if r['code'] == 'TASK_TIMEOUT' else 'Unknown'), 'error_message': r.get('error_message', ''), 'announcement_budget_seconds': seconds, 'batch_budget_seconds': task_seconds, 'action': _analysis_action(r['code']), **({'evidence_preview': r['evidence_preview']} if r.get('evidence_preview') else {}), **({'document_chars': r['document_chars']} if r.get('document_chars') else {})}) for k,r in records.items() if r['status']=='failed']
         scan.counts.analysis_failed = sum(r['status']=='failed' for r in records.values())

@@ -99,7 +99,11 @@ def test_successful_marketing_analysis_without_a_clear_entry_point_is_explicit(t
     workbook = load_workbook(
         tmp_path / "reports" / scan.scan_id / "report.xlsx"
     )
-    assert workbook.sheetnames == ["商机明细", "扫描概览"]
+    assert workbook.sheetnames == [
+        "商机明细",
+        "扫描概览",
+        "公告处理明细",
+    ]
     assert workbook["商机明细"].max_row == 3
     headers = [cell.value for cell in workbook["商机明细"][1]]
     is_opportunity_column = headers.index("是否商机") + 1
@@ -107,3 +111,84 @@ def test_successful_marketing_analysis_without_a_clear_entry_point_is_explicit(t
         workbook["商机明细"].cell(row, is_opportunity_column).value == "否"
         for row in (2, 3)
     )
+
+
+def test_announcement_without_extracted_events_is_visible_in_report(tmp_path: Path):
+    class EmptyEvents:
+        def analyze(self, announcement, text):
+            return EventExtractionResult(
+                announcement_id=announcement.announcement_id,
+                events=[],
+            )
+
+    runner = ScanOrchestrator(FixtureCollector(tmp_path), tmp_path)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 11, 1), end_date=date(2026, 11, 6)),
+    )
+    runner.run_collection(scan.scan_id)
+    runner.prepare_analysis(scan.scan_id)
+    result = runner.run_agents(
+        scan.scan_id, EmptyEvents(), DraftAgent(), Marketing()
+    )
+    assert result.counts.opportunities == 0
+    assert result.counts.non_opportunities == 0
+
+    coverage = json.loads(
+        (
+            tmp_path
+            / "results"
+            / scan.scan_id
+            / "announcement_analysis.json"
+        ).read_text(encoding="utf-8")
+    )["items"]
+    assert len(coverage) == 1
+    assert coverage[0]["raw_event_count"] == 0
+    assert coverage[0]["opportunity_candidate_count"] == 0
+    assert coverage[0]["status"] == "未识别到事件"
+
+    runner.run_export(scan.scan_id)
+    workbook = load_workbook(
+        tmp_path / "reports" / scan.scan_id / "report.xlsx"
+    )
+    sheet = workbook["公告处理明细"]
+    headers = [cell.value for cell in sheet[1]]
+    values = dict(zip(headers, [cell.value for cell in sheet[2]]))
+    assert values["处理状态"] == "未识别到事件"
+    assert values["公告标题"] == "项目公告"
+
+
+def test_announcement_coverage_reports_event_level_deduplication(tmp_path: Path):
+    class DuplicateEvents:
+        def analyze(self, announcement, text):
+            quote = "公司发行债券20亿元。"
+            return EventExtractionResult(
+                announcement_id=announcement.announcement_id,
+                events=[
+                    Event(event_id="e1", summary="发行债券20亿元。", evidence=[{"text": quote}]),
+                    Event(event_id="e2", summary="发行债券20亿元。", evidence=[{"text": quote}]),
+                ],
+            )
+
+    runner = ScanOrchestrator(FixtureCollector(tmp_path), tmp_path)
+    scan = runner.create(
+        [Company(stock_code="1", company_name="A")],
+        DateRange(start_date=date(2026, 11, 1), end_date=date(2026, 11, 6)),
+    )
+    runner.run_collection(scan.scan_id)
+    runner.prepare_analysis(scan.scan_id)
+    runner.run_agents(scan.scan_id, DuplicateEvents(), DraftAgent(), Marketing())
+
+    coverage = json.loads(
+        (
+            tmp_path
+            / "results"
+            / scan.scan_id
+            / "announcement_analysis.json"
+        ).read_text(encoding="utf-8")
+    )["items"][0]
+    assert coverage["raw_event_count"] == 2
+    assert coverage["unique_event_count"] == 1
+    assert coverage["duplicate_event_count"] == 1
+    assert coverage["analyzable_event_count"] == 1
+    assert coverage["opportunity_candidate_count"] == 1

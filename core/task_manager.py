@@ -139,6 +139,7 @@ class TaskManager:
                         'announcements.json',
                         'opportunities.json',
                         'non_opportunities.json',
+                        'announcement_analysis.json',
                     ):
                         if (source / filename).exists():
                             lease_guard.assert_owned()
