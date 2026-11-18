@@ -186,6 +186,7 @@ def export_xlsx(
     path: Path,
     lease_guard=None,
     non_opportunities=None,
+    announcement_analysis=None,
 ):
     if lease_guard is not None:
         lease_guard.assert_owned()
@@ -222,6 +223,75 @@ def export_xlsx(
     summary.auto_filter.ref = summary.dimensions
     summary.column_dimensions["A"].width = 24
     summary.column_dimensions["B"].width = 48
+
+    if announcement_analysis:
+        coverage = wb.create_sheet("公告处理明细")
+        coverage_headers = [
+            "公告编号",
+            "股票代码",
+            "企业名称",
+            "披露日期",
+            "公告标题",
+            "原始事件数",
+            "去重后事件数",
+            "合并重复事件数",
+            "进入分析事件数",
+            "商机候选记录数",
+            "合并重复商机记录数",
+            "商机数",
+            "未形成商机数",
+            "处理状态",
+            "未形成商机或未入选原因",
+            "公告原文链接",
+        ]
+        coverage.append(coverage_headers)
+        for cell in coverage[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+        for item in announcement_analysis:
+            coverage.append(
+                [
+                    item.get("announcement_id"),
+                    item.get("stock_code"),
+                    item.get("company_name"),
+                    item.get("publish_date"),
+                    item.get("announcement_title"),
+                    item.get("raw_event_count")
+                    if item.get("raw_event_count") is not None
+                    else "未记录",
+                    item.get("unique_event_count")
+                    if item.get("unique_event_count") is not None
+                    else "未记录",
+                    item.get("duplicate_event_count")
+                    if item.get("duplicate_event_count") is not None
+                    else "未记录",
+                    item.get("analyzable_event_count")
+                    if item.get("analyzable_event_count") is not None
+                    else "未记录",
+                    item.get("opportunity_candidate_count")
+                    if item.get("opportunity_candidate_count") is not None
+                    else "未记录",
+                    item.get("merged_opportunity_count")
+                    if item.get("merged_opportunity_count") is not None
+                    else "未记录",
+                    item.get("opportunity_count", 0),
+                    item.get("non_opportunity_count", 0),
+                    item.get("status"),
+                    item.get("reason"),
+                    safe_https_url(item.get("source_url")) or "",
+                ]
+            )
+        coverage.freeze_panes = "A2"
+        coverage.auto_filter.ref = coverage.dimensions
+        for row in coverage.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+        for index, width in {
+            1: 24, 2: 12, 3: 20, 4: 14, 5: 42, 6: 14, 7: 14,
+            8: 18, 9: 18, 10: 22, 11: 22, 12: 12, 13: 16, 14: 24,
+            15: 56, 16: 52,
+        }.items():
+            coverage.column_dimensions[get_column_letter(index)].width = width
 
     if scan.errors:
         errors = wb.create_sheet("异常明细")

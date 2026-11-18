@@ -74,6 +74,18 @@ tr:nth-child(even){background:#f8fafc}
 </tr>{% endfor %}
 </tbody></table>
 {% endif %}
+{% if announcement_analysis %}
+<h2>公告处理明细</h2>
+<table><thead><tr><th>公司/公告</th><th>事件拆解</th><th>识别结果</th><th>处理说明</th></tr></thead><tbody>
+{% for a in announcement_analysis %}
+<tr>
+<td><strong>{{ a.company_name }}</strong><br>{{ a.announcement_title }}<br><span class="muted">{{ a.announcement_id }}</span></td>
+<td>原始事件 {{ a.raw_event_count if a.raw_event_count is not none else '未记录' }} / 去重后 {{ a.unique_event_count if a.unique_event_count is not none else '未记录' }} / 合并重复事件 {{ a.duplicate_event_count if a.duplicate_event_count is not none else '未记录' }} / 进入分析 {{ a.analyzable_event_count if a.analyzable_event_count is not none else '未记录' }} / 商机候选 {{ a.opportunity_candidate_count if a.opportunity_candidate_count is not none else '未记录' }} / 合并重复商机 {{ a.merged_opportunity_count if a.merged_opportunity_count is not none else '未记录' }}</td>
+<td>{{ a.status }} · 商机 {{ a.opportunity_count }} / 未形成 {{ a.non_opportunity_count }}</td>
+<td>{{ a.reason or '—' }}{% set source_url = safe_https_url(a.source_url) %}{% if source_url %}<br><a href="{{ source_url }}" rel="noopener noreferrer">查看原文</a>{% endif %}</td>
+</tr>{% endfor %}
+</tbody></table>
+{% endif %}
 {% if scan.errors %}
 <h2>异常明细</h2><ul>
 {% for e in scan.errors %}
@@ -90,6 +102,7 @@ def export_html(
     path: Path,
     lease_guard=None,
     non_opportunities=None,
+    announcement_analysis=None,
 ):
     if lease_guard is not None:
         lease_guard.assert_owned()
@@ -116,6 +129,7 @@ def export_html(
         opportunities=opportunities,
         scan=scan,
         non_opportunities=non_opportunities,
+        announcement_analysis=announcement_analysis or [],
         category_counts=category_counts,
         safe_https_url=safe_https_url,
     )

@@ -514,7 +514,12 @@ class AppService:
         folder = self._scan_dir(scan_id)
         archive = folder / "history" / uuid4().hex
         archive.mkdir(parents=True, exist_ok=True)
-        for name in ("scan.json", "opportunities.json", "non_opportunities.json"):
+        for name in (
+            "scan.json",
+            "opportunities.json",
+            "non_opportunities.json",
+            "announcement_analysis.json",
+        ):
             source = folder / name
             if source.exists():
                 shutil.copy2(source, archive / name)

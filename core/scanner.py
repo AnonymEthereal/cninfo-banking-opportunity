@@ -213,6 +213,64 @@ class ScanOrchestrator:
             if excluded_path.exists()
             else {"items": []}
         )
+        analysis_path = result_dir / "announcement_analysis.json"
+        if analysis_path.exists():
+            announcement_analysis = json.loads(
+                analysis_path.read_text(encoding="utf-8")
+            ).get("items", [])
+        else:
+            announcements_path = result_dir / "announcements.json"
+            announcement_payload = (
+                json.loads(announcements_path.read_text(encoding="utf-8"))
+                if announcements_path.exists()
+                else {"items": []}
+            )
+            all_saved_items = [
+                *payload.get("items", []),
+                *excluded_payload.get("items", []),
+            ]
+            announcement_analysis = []
+            for announcement in announcement_payload.get("items", []):
+                related = [
+                    item for item in all_saved_items
+                    if item.get("announcement_id") == announcement["announcement_id"]
+                ]
+                leads = sum(
+                    item.get("analysis_outcome") != "no_clear_entry_point"
+                    for item in related
+                )
+                non_leads = sum(
+                    item.get("analysis_outcome") == "no_clear_entry_point"
+                    for item in related
+                )
+                announcement_analysis.append(
+                    {
+                        "announcement_id": announcement["announcement_id"],
+                        "stock_code": announcement["stock_code"],
+                        "company_name": announcement["company_name"],
+                        "publish_date": str(announcement["publish_date"]),
+                        "announcement_title": announcement["title"],
+                        "source_url": announcement["source_url"],
+                        "raw_event_count": None,
+                        "unique_event_count": None,
+                        "duplicate_event_count": None,
+                        "analyzable_event_count": None,
+                        "opportunity_candidate_count": None,
+                        "merged_opportunity_count": None,
+                        "opportunity_count": leads,
+                        "non_opportunity_count": non_leads,
+                        "status": (
+                            "已识别商机" if leads else
+                            "已分析，未形成商机" if non_leads else
+                            "历史记录未保存事件统计"
+                        ),
+                        "reason": (
+                            "该历史检查点未保存事件拆解统计，无法判断此公告为何没有生成商机记录。"
+                            if not related
+                            else ""
+                        ),
+                    }
+                )
         all_items = {
             item["opportunity_id"]: item
             for item in [*payload.get("items", []), *excluded_payload.get("items", [])]
@@ -245,6 +303,7 @@ class ScanOrchestrator:
             report_dir / "report.xlsx",
             lease_guard=self.lease_guard,
             non_opportunities=non_opportunities,
+            announcement_analysis=announcement_analysis,
         )
         export_html(
             opportunities,
@@ -252,6 +311,7 @@ class ScanOrchestrator:
             report_dir / "report.html",
             lease_guard=self.lease_guard,
             non_opportunities=non_opportunities,
+            announcement_analysis=announcement_analysis,
         )
         scan.status = ScanStatus.COMPLETED_WITH_ERRORS if scan.errors else ScanStatus.COMPLETED
         scan.progress.stage = "completed"
