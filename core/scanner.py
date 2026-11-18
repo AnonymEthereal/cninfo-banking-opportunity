@@ -200,8 +200,41 @@ class ScanOrchestrator:
         self._save(scan)
         result_dir = self.root / "results" / scan.scan_id
         import json
-        payload = json.loads((result_dir / "opportunities.json").read_text(encoding="utf-8")) if (result_dir / "opportunities.json").exists() else {"items": []}
-        opportunities = [Opportunity.model_validate(item) for item in payload.get("items", [])]
+        from .dedup import link_related_disclosures
+
+        payload = (
+            json.loads((result_dir / "opportunities.json").read_text(encoding="utf-8"))
+            if (result_dir / "opportunities.json").exists()
+            else {"items": []}
+        )
+        excluded_path = result_dir / "non_opportunities.json"
+        excluded_payload = (
+            json.loads(excluded_path.read_text(encoding="utf-8"))
+            if excluded_path.exists()
+            else {"items": []}
+        )
+        all_items = {
+            item["opportunity_id"]: item
+            for item in [*payload.get("items", []), *excluded_payload.get("items", [])]
+        }
+        # Older checkpoints stored all classified items in opportunities.json.
+        linked_items = link_related_disclosures(list(all_items.values()))
+        opportunity_items = [
+            item for item in linked_items
+            if item.get("analysis_outcome") != "no_clear_entry_point"
+        ]
+        non_opportunity_items = [
+            item for item in linked_items
+            if item.get("analysis_outcome") == "no_clear_entry_point"
+        ]
+        scan.counts.opportunities = len(opportunity_items)
+        scan.counts.non_opportunities = len(non_opportunity_items)
+        opportunities = [
+            Opportunity.model_validate(item) for item in opportunity_items
+        ]
+        non_opportunities = [
+            Opportunity.model_validate(item) for item in non_opportunity_items
+        ]
         report_dir = self.root / "reports" / scan.scan_id
         report_scan = scan.model_copy(deep=True)
         report_scan.status = ScanStatus.COMPLETED_WITH_ERRORS if scan.errors else ScanStatus.COMPLETED
@@ -211,12 +244,14 @@ class ScanOrchestrator:
             report_scan,
             report_dir / "report.xlsx",
             lease_guard=self.lease_guard,
+            non_opportunities=non_opportunities,
         )
         export_html(
             opportunities,
             report_scan,
             report_dir / "report.html",
             lease_guard=self.lease_guard,
+            non_opportunities=non_opportunities,
         )
         scan.status = ScanStatus.COMPLETED_WITH_ERRORS if scan.errors else ScanStatus.COMPLETED
         scan.progress.stage = "completed"

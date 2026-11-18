@@ -25,7 +25,7 @@ Application 层：CompanyListService、ScanService、ReportService
 data/
   inputs/        名单快照
   announcements/ 原始公告与正文
-  results/       扫描状态、商机 JSON、错误日志
+  results/       扫描状态、商机及未形成商机 JSON、错误日志
   reports/       XLSX、HTML
 ```
 
@@ -147,7 +147,7 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 ### Agent 1：事件拆解
 
-输入公告元数据和正文，输出 `EventExtractionResult`。提示词要求只引用正文事实，可输出 0..N 个事件；每个事件包含 `event_id`、`summary`、`evidence[]`、`worth_analyzing`。只有 `worth_analyzing=true` 的事件需要证据；程序性事件引用不精确时不再拖累同一公告中的真实事件。模型漏写的事件 ID 按顺序补齐，避免商机 ID 冲突。
+输入公告元数据和正文，输出 `EventExtractionResult`。提示词要求只引用正文事实，可输出 0..N 个事件；每个事件包含 `event_id`、`summary`、`evidence[]`、`worth_analyzing`。同一事项不能因摘要角度或类别不同而拆成多条；只有有独立事实、可独立跟进的事项才拆分。只有 `worth_analyzing=true` 的事件需要证据；程序性事件引用不精确时不再拖累同一公告中的真实事件。模型漏写的事件 ID 按顺序补齐，避免商机 ID 冲突。
 
 ### Agent 2：分类与金额
 
@@ -157,6 +157,8 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 七类均执行分类适配的深度提示词，分别指导采购、销售、投资并购、融资新增、增值、报告和其他事件的业务分析。Agent 输出 `analysis_summary` 及 `analysis_outcome`（`opportunity_identified | no_clear_entry_point`）；无明确切入点时不强行推荐产品。报告类只分析事件及公告明确披露的信息，本轮不实现完整的 16 项财务指标分析。营销阶段只接收结构化事件、金额与原文证据，不重复发送整篇公告。所有推断写入营销字段，不得写入事实字段。
 
+编排器只将 `opportunity_identified` 写入 `opportunities.json` 和商机计数；`no_clear_entry_point` 单独写入 `non_opportunities.json`，供报告复核但不作为营销线索。老检查点中的字段缺失记录维持兼容。跨公告的可能关联只生成候选关联编号，不自动合并。
+
 统一 `LLMClient.generate_json(schema, prompt)`：设置超时、最大重试次数和模型名；每次响应先解析 JSON，再执行 Pydantic 校验。响应允许带 Markdown 代码围栏或简短说明文字；结构不符时带着字段错误自动重问一次，仍失败才记录 `LLM_TIMEOUT`、`LLM_INVALID_JSON` 或 `SCHEMA_VALIDATION_FAILED`。
 
 证据校验只忽略排版差异：空白、全角/半角、引号样式、破折号和零宽字符。改写、拼接句子、省略号缩写仍然拒收。拒收后 Agent 会把失败引文回传给模型，要求重新逐字引用一次；第二次仍不通过才把该公告记为分析失败并保留检查点，避免静默接受无法核实的证据。失败详情额外记录 `evidence_preview` 与 `document_chars`，便于判断是模型改写还是正文过长/解析不完整。
@@ -165,7 +167,8 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 - 同一 `scan_id` 内公告按 `announcement_id` 去重。
 - 商机按 `opportunity_id` 去重；生成 ID 时使用公告 ID + 事件 ID 的稳定哈希，避免重复运行产生重复记录。
-- 事件和商机去重不能只看摘要相似度；跨类别不合并，摘要相似时还要核对金额单位、证据或其他事实锚点。不同事件 ID 生成的商机优先分别保留。
+- 事件和商机去重不能只看摘要相似度；需核对金额单位、证据或其他事实锚点。高度重叠的重复事项可合并并保留证据并集，独立交易不得因共用金额或泛化用语而合并。
+- 跨公告只标注可能关联的公告编号，不自动合并或删除来源记录。
 - 创建扫描前可计算输入指纹；相同公司和日期范围仍创建新 `scan_id`，但复用已保存公告文件，减少重复下载。
 - 报告写入临时文件后改名，防止 UI 下载到半成品。
 
@@ -176,6 +179,7 @@ data/results/{scan_id}/
   scan.json
   announcements.json
   opportunities.jsonl
+  non_opportunities.json
   errors.jsonl
   agents/{announcement_id}/agent1.json
   agents/{announcement_id}/agent2.json

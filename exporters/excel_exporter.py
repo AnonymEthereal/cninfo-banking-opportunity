@@ -1,59 +1,240 @@
 from pathlib import Path
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
-from openpyxl.utils import get_column_letter
 from uuid import uuid4
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+
 from core.url_safety import safe_https_url
 
-HEADERS = ["opportunity_id","announcement_id","stock_code","company_name","announcement_title","publish_date","category","subcategory","event_summary","amount_value","currency","amount_type","amount_undisclosed","amount_verification_status","analysis_outcome","analysis_summary","bank_products","marketing_direction","suggested_action","evidence","pending_verification","source_url"]
 
-def export_xlsx(opportunities, scan, path: Path, lease_guard=None):
-    if lease_guard is not None:
-        lease_guard.assert_owned()
-    wb = Workbook(); ws = wb.active; ws.title = "商机明细"
+HEADERS = [
+    "商机编号",
+    "公告编号",
+    "股票代码",
+    "企业名称",
+    "公告标题",
+    "披露日期",
+    "商机大类",
+    "商机细分",
+    "事件摘要",
+    "核心金额数值",
+    "币种",
+    "金额类型",
+    "金额是否未披露",
+    "金额核验状态",
+    "切入点判断",
+    "分析结论",
+    "潜在银行产品",
+    "营销方向",
+    "建议跟进动作",
+    "原文证据",
+    "待核实事项",
+    "公告原文链接",
+    "交易对手",
+    "项目名称",
+    "其他披露金额",
+    "可能关联公告编号",
+    "分析处理状态",
+    "分析异常",
+]
+
+_ANALYSIS_OUTCOMES = {
+    "opportunity_identified": "已识别切入点",
+    "no_clear_entry_point": "暂未识别明确切入点",
+}
+_ANALYSIS_STATUSES = {
+    "completed": "完成",
+    "partial": "部分完成",
+    "failed": "失败",
+}
+
+
+def _amount_text(amount: dict) -> str:
+    parts = []
+    if amount.get("type"):
+        parts.append(str(amount["type"]))
+    if amount.get("value") is not None:
+        currency = amount.get("currency") or "币种未明确"
+        parts.append(f"{amount['value']} {currency}")
+    elif amount.get("undisclosed"):
+        parts.append("未披露")
+    elif amount.get("original_text"):
+        parts.append(str(amount["original_text"]))
+    if amount.get("verification_status") == "pending":
+        parts.append("待核实")
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]}：{' '.join(parts[1:])}"
+
+
+def _row(opportunity) -> list:
+    data = opportunity.model_dump()
+    amount = data.get("amount") or {}
+    currency = amount.get("currency") or (
+        "币种未明确" if amount.get("value") is not None else ""
+    )
+    verification = {
+        "verified": "数值已与原文核对",
+        "pending": "待核实",
+    }.get(
+        amount.get("verification_status"),
+        "未核验" if amount.get("value") is not None else "",
+    )
+    evidence = "\n".join(
+        f"第{item['source_page']}页：{item['text']}"
+        if item.get("source_page")
+        else item["text"]
+        for item in data.get("evidence") or []
+    )
+    other_amounts = "\n".join(
+        _amount_text(item) for item in data.get("other_amounts") or []
+    )
+    return [
+        data.get("opportunity_id"),
+        data.get("announcement_id"),
+        data.get("stock_code"),
+        data.get("company_name"),
+        data.get("announcement_title"),
+        str(data.get("publish_date")),
+        data.get("category"),
+        data.get("subcategory") or "未细分",
+        data.get("event_summary"),
+        amount.get("value"),
+        currency,
+        amount.get("type"),
+        (
+            "是"
+            if amount.get("undisclosed")
+            else "否" if amount.get("value") is not None else "未确认"
+        ),
+        verification,
+        _ANALYSIS_OUTCOMES.get(data.get("analysis_outcome"), ""),
+        data.get("analysis_summary"),
+        "、".join(data.get("bank_products") or []),
+        data.get("marketing_direction"),
+        data.get("suggested_action"),
+        evidence,
+        "\n".join(data.get("pending_verification") or []),
+        safe_https_url(data.get("source_url")) or "",
+        data.get("counterparty"),
+        data.get("project_name"),
+        other_amounts,
+        "、".join(data.get("related_announcement_ids") or []),
+        _ANALYSIS_STATUSES.get(data.get("analysis_status"), data.get("analysis_status")),
+        data.get("analysis_error"),
+    ]
+
+
+def _style_detail_sheet(ws, opportunities) -> None:
     ws.append(HEADERS)
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}1"
-    for o in opportunities:
-        d = o.model_dump(); amount = d["amount"]
-        currency = amount.get("currency") or (
-            "币种未明确" if amount.get("value") is not None else ""
-        )
-        verification = {
-            "verified": "数值已与原文核对",
-            "pending": "待核实",
-        }.get(
-            amount.get("verification_status"),
-            "未核验" if amount.get("value") is not None else "",
-        )
-        outcome = {
-            "opportunity_identified": "已识别切入点",
-            "no_clear_entry_point": "暂未识别明确切入点",
-        }.get(d.get("analysis_outcome"), "")
-        ws.append([d.get("opportunity_id"), d.get("announcement_id"), d.get("stock_code"), d.get("company_name"), d.get("announcement_title"), str(d.get("publish_date")), d.get("category"), d.get("subcategory"), d.get("event_summary"), amount.get("value"), currency, amount.get("type"), amount.get("undisclosed", False), verification, outcome, d.get("analysis_summary"), ", ".join(d.get("bank_products") or []), d.get("marketing_direction"), d.get("suggested_action"), "\n".join(x["text"] for x in d.get("evidence") or []), "\n".join(d.get("pending_verification") or []), safe_https_url(d.get("source_url")) or ""])
+    for opportunity in opportunities:
+        ws.append(_row(opportunity))
+    ws.auto_filter.ref = ws.dimensions
     for row in ws.iter_rows(min_row=2):
-        for cell in row: cell.alignment = Alignment(vertical="top", wrap_text=True)
-    for index, width in {1:24, 2:22, 3:12, 4:18, 5:32, 6:14, 7:14, 8:16, 9:42, 10:16, 11:16, 12:18, 13:16, 14:18, 15:24, 16:48, 17:28, 18:32, 19:32, 20:48, 21:36, 22:48}.items(): ws.column_dimensions[get_column_letter(index)].width = width
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.data_type = "s"
+    widths = {
+        1: 24, 2: 24, 3: 12, 4: 18, 5: 36, 6: 14, 7: 16, 8: 18,
+        9: 44, 10: 16, 11: 16, 12: 20, 13: 18, 14: 22, 15: 22, 16: 48,
+        17: 30, 18: 36, 19: 36, 20: 52, 21: 44, 22: 52, 23: 24, 24: 28,
+        25: 48, 26: 28, 27: 18, 28: 36,
+    }
+    for index, width in widths.items():
+        ws.column_dimensions[get_column_letter(index)].width = width
+
+
+def export_xlsx(
+    opportunities,
+    scan,
+    path: Path,
+    lease_guard=None,
+    non_opportunities=None,
+):
+    if lease_guard is not None:
+        lease_guard.assert_owned()
+    opportunity_items = []
+    excluded_items = list(non_opportunities or [])
+    for item in opportunities or []:
+        if item.analysis_outcome == "no_clear_entry_point":
+            excluded_items.append(item)
+        else:
+            opportunity_items.append(item)
+    opportunities = list(
+        {
+            item.opportunity_id: item for item in opportunity_items
+        }.values()
+    )
+    non_opportunities = list(
+        {
+            item.opportunity_id: item for item in excluded_items
+        }.values()
+    )
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "商机明细"
+    _style_detail_sheet(ws, opportunities)
+
+    if non_opportunities:
+        excluded = wb.create_sheet("未形成商机")
+        _style_detail_sheet(excluded, non_opportunities)
+
     summary = wb.create_sheet("扫描概览")
     summary.append(["字段", "值"])
-    summary.append(["扫描 ID", scan.scan_id]); summary.append(["状态", str(scan.status)])
-    summary.append(["企业数量", scan.counts.companies]); summary.append(["公告数量", scan.counts.announcements]); summary.append(["商机数量", scan.counts.opportunities]); summary.append(["采集失败", scan.counts.collection_failed]); summary.append(["正文解析失败", scan.counts.document_failed]); summary.append(["分析失败", scan.counts.analysis_failed])
-    errors = wb.create_sheet("异常明细") if scan.errors else None
-    if errors is not None:
-        errors.append(["scope", "code", "announcement_id", "message"])
+    for cell in summary[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+    summary_rows = [
+        ["扫描 ID", scan.scan_id],
+        ["状态", str(scan.status)],
+        ["扫描开始日期", str(scan.date_range.start_date)],
+        ["扫描结束日期", str(scan.date_range.end_date)],
+        ["企业数量", scan.counts.companies],
+        ["公告数量", scan.counts.announcements],
+        ["商机数量", scan.counts.opportunities],
+        ["未形成商机事项数", scan.counts.non_opportunities],
+        ["采集失败", scan.counts.collection_failed],
+        ["正文解析失败", scan.counts.document_failed],
+        ["分析失败", scan.counts.analysis_failed],
+    ]
+    for row in summary_rows:
+        summary.append(row)
+    summary.freeze_panes = "A2"
+    summary.auto_filter.ref = summary.dimensions
+    summary.column_dimensions["A"].width = 24
+    summary.column_dimensions["B"].width = 48
+
+    if scan.errors:
+        errors = wb.create_sheet("异常明细")
+        errors.append(["范围", "错误代码", "公告编号", "错误信息"])
+        for cell in errors[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
         for error in scan.errors:
-            errors.append([error.scope, error.code, error.announcement_id, error.message])
+            errors.append(
+                [error.scope, error.code, error.announcement_id, error.message]
+            )
         errors.freeze_panes = "A2"
         errors.auto_filter.ref = errors.dimensions
+        errors.column_dimensions["A"].width = 18
+        errors.column_dimensions["B"].width = 30
+        errors.column_dimensions["C"].width = 28
         errors.column_dimensions["D"].width = 60
+
     for sheet in wb:
-        for row in sheet:
+        for row in sheet.iter_rows():
             for cell in row:
                 if isinstance(cell.value, str) and cell.value.startswith("="):
                     cell.data_type = "s"
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     try:

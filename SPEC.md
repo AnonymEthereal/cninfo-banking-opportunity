@@ -8,6 +8,14 @@ MVP 验收后，营销分析范围由采购、投资并购、融资新增、增�
 
 本轮不实现完整的 16 项财务指标提取或分析。报告类只针对事件及公告明确披露的信息生成业务分析。新扫描使用新规则；历史扫描不自动重算。
 
+## 商机去重与报告增补
+
+只有 `analysis_outcome=opportunity_identified` 的记录计入商机数量并进入“商机明细”。`no_clear_entry_point` 记录保留在独立的 `non_opportunities.json`，在 XLSX“未形成商机”工作表和 HTML 对应区块展示，不计入商机数量。旧任务导出时也按已有 `analysis_outcome` 进行兼容分流；缺少该字段的旧记录不擅自判为无商机。
+
+同一公告内，事件拆解和商机生成需要识别摘要、证据及关键事实重叠；仅在有较强事实锚点时合并，不能因金额或泛化用语相同就合并独立事项。跨公告只标注可能关联的公告编号，不自动合并或删除来源记录。
+
+Excel 面向业务人员的列名使用中文，内部 JSON/API 字段名保持不变。导出需覆盖交易对手、项目名称、其他披露金额、关联公告编号和分析状态等可用字段；未提供的细分项显示“未细分”，金额等事实字段不得猜测补齐。
+
 ## 企业输入增补（2026-11-11）
 
 公告预览增补：新建 UI 任务先检索元数据，进入 awaiting_review，用户确认后才下载正文并分析。持久化 require_review、analysis_confirmed 和时间预算；来源重试后需重新确认。原脚本及旧任务默认保持原流程。默认单篇 600 秒、整批分析 28800 秒，可在页面调整；仍保留底层 HTTP 超时。错误详情展示阶段、类型、可用 HTTP 状态及建议，不输出原始模型响应或密钥。无公告可修改范围另建检索，无需启动模型。
@@ -101,7 +109,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 ```json
 {
   "scan_id":"scan_01J...", "status":"analyzing", "progress": {"stage":"agent_2", "completed":12, "total":20},
-  "counts":{"companies":20,"announcements":35,"opportunities":18,"collection_failed":2,"analysis_failed":1},
+  "counts":{"companies":20,"announcements":35,"opportunities":18,"non_opportunities":4,"collection_failed":2,"analysis_failed":1},
   "errors":[{"scope":"announcement","announcement_id":"ANN-1","code":"PDF_PARSE_FAILED","message":"无法提取正文"}],
   "report":{"xlsx":null,"html":null}
 }
@@ -126,6 +134,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
   "event_summary":"...", "amount":{"value":1000000000,"currency":"CNY","type":"项目总投资","original_text":"...","undisclosed":false,"verification_status":"verified"},
   "other_amounts":[], "counterparty":null, "project_name":null, "bank_products":[], "marketing_direction":null,
   "suggested_action":null, "analysis_summary":null, "analysis_outcome":null,
+  "related_announcement_ids":[],
   "evidence":[{"text":"...","source_page":1}], "pending_verification":["..."],
   "source_url":"https://...", "analysis_status":"completed", "analysis_error":null
 }
@@ -158,5 +167,8 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 - 真实公告保留来源 URL、标题、日期和正文；采集失败可见。
 - 一份公告可产生多条商机；重复运行不产生重复公告记录。
 - 七类商机均有分类适配的深度业务分析；无明确切入点与分析失败、旧记录未分析能够区分。
+- 无明确切入点的事项不计入商机明细和商机数量，但保留在独立报告区。
+- 同一公告的重复事项不重复输出，独立事项不被误合并；跨公告仅建立候选关联，不自动合并。
+- XLSX 面向业务人员使用中文列名，并导出已有的交易对手、项目、其他金额和分析状态字段。
 - XLSX 和 HTML 使用同一批 `Opportunity` 数据；空结果、部分失败、下载未就绪均有明确提示。
 - 前端展示的每个状态和数字均可从上述接口响应直接得到。

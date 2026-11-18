@@ -70,6 +70,7 @@ class ScanCounts(BaseModel):
     companies: int = 0
     announcements: int = 0
     opportunities: int = 0
+    non_opportunities: int = 0
     collection_failed: int = 0
     analysis_failed: int = 0
     document_failed: int = 0
@@ -146,6 +147,7 @@ class Opportunity(BaseModel):
     suggested_action: str | None = None
     analysis_summary: str | None = None
     analysis_outcome: Literal["opportunity_identified", "no_clear_entry_point"] | None = None
+    related_announcement_ids: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     pending_verification: list[str] = Field(default_factory=list)
     source_url: str
@@ -157,7 +159,14 @@ class Opportunity(BaseModel):
     def amount_default(cls, value):
         return {} if value is None else value
 
-    @field_validator("other_amounts", "bank_products", "evidence", "pending_verification", mode="before")
+    @field_validator(
+        "other_amounts",
+        "bank_products",
+        "related_announcement_ids",
+        "evidence",
+        "pending_verification",
+        mode="before",
+    )
     @classmethod
     def list_default(cls, value):
         return _as_list(value)
