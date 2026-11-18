@@ -73,6 +73,32 @@ def _compatible_fields(left: dict, right: dict, fields: tuple[str, ...]) -> bool
     return True
 
 
+def _soft_compatible_fields(
+    left: dict, right: dict, fields: tuple[str, ...], similarity: float = 0.8
+) -> bool:
+    for field in fields:
+        first = normalize_text(str(left.get(field) or ""))
+        second = normalize_text(str(right.get(field) or ""))
+        if first and second and _similarity(first, second) < similarity:
+            return False
+    return True
+
+
+def _shares_context_anchor(
+    left: dict, right: dict, fields: tuple[str, ...], similarity: float = 0.8
+) -> bool:
+    return any(
+        normalize_text(str(left.get(field) or ""))
+        and normalize_text(str(right.get(field) or ""))
+        and _similarity(
+            normalize_text(str(left.get(field) or "")),
+            normalize_text(str(right.get(field) or "")),
+        )
+        >= similarity
+        for field in fields
+    )
+
+
 def _same_numeric_value(left, right) -> bool:
     try:
         return Decimal(str(left)) == Decimal(str(right))
@@ -217,6 +243,13 @@ def _merge_unique_values(target: list, incoming: list, key) -> list:
 
 
 def _merge_opportunity(duplicate: dict, item: dict) -> None:
+    previous_outcome = duplicate.get("analysis_outcome")
+    incoming_outcome = item.get("analysis_outcome")
+    outcome_conflict = (
+        previous_outcome in {"opportunity_identified", "no_clear_entry_point"}
+        and incoming_outcome in {"opportunity_identified", "no_clear_entry_point"}
+        and previous_outcome != incoming_outcome
+    )
     duplicate_evidence = duplicate.get("evidence") or []
     incoming_evidence = item.get("evidence") or []
     duplicate["evidence"] = _merge_unique_values(
@@ -250,17 +283,48 @@ def _merge_opportunity(duplicate: dict, item: dict) -> None:
         lambda value: str(value),
     )
     for field in ("counterparty", "project_name", "subcategory"):
-        if not duplicate.get(field) and item.get(field):
+        if item.get(field) and (
+            not duplicate.get(field)
+            or len(str(item[field])) > len(str(duplicate[field]))
+        ):
             duplicate[field] = item[field]
     if duplicate.get("amount", {}).get("value") is None and item.get("amount", {}).get("value") is not None:
         duplicate["amount"] = item["amount"]
-    if item.get("analysis_outcome") == "opportunity_identified":
+    if outcome_conflict:
+        duplicate["analysis_conflict"] = True
+        duplicate["analysis_outcome"] = "no_clear_entry_point"
+        duplicate["analysis_status"] = "partial"
+        duplicate["bank_products"] = []
+        duplicate["marketing_direction"] = None
+        duplicate["suggested_action"] = None
+        duplicate["analysis_summary"] = (
+            "同一事项的重复分析结论不一致，已按保守原则暂不计为商机；"
+            "请人工复核后再决定是否跟进。"
+        )
+        duplicate["pending_verification"] = _merge_unique_values(
+            duplicate.get("pending_verification") or [],
+            ["重复事件的商机判断存在分歧，需人工复核。"],
+            lambda value: normalize_text(str(value)),
+        )
+    elif duplicate.get("analysis_conflict"):
+        duplicate["analysis_outcome"] = "no_clear_entry_point"
+        duplicate["bank_products"] = []
+        duplicate["marketing_direction"] = None
+        duplicate["suggested_action"] = None
+    elif item.get("analysis_outcome") == "opportunity_identified":
         duplicate["analysis_outcome"] = "opportunity_identified"
         for field in ("analysis_summary", "marketing_direction", "suggested_action"):
             if item.get(field):
                 duplicate[field] = item[field]
+    elif incoming_outcome == "no_clear_entry_point":
+        duplicate["analysis_outcome"] = "no_clear_entry_point"
+        duplicate["bank_products"] = []
+        duplicate["marketing_direction"] = None
+        duplicate["suggested_action"] = None
+        if item.get("analysis_summary"):
+            duplicate["analysis_summary"] = item["analysis_summary"]
     elif duplicate.get("analysis_outcome") is None:
-        duplicate["analysis_outcome"] = item.get("analysis_outcome")
+        duplicate["analysis_outcome"] = incoming_outcome
     if not duplicate.get("analysis_summary") and item.get("analysis_summary"):
         duplicate["analysis_summary"] = item["analysis_summary"]
     if not duplicate.get("analysis_error") and item.get("analysis_error"):
@@ -305,12 +369,38 @@ def dedupe_opportunities(items: list[dict], summary_ratio: float = 0.85, evidenc
                 bool(item.get("announcement_id"))
                 and item.get("announcement_id") == existing.get("announcement_id")
             )
-            strong_cross_category_duplicate = (
-                not same_category
-                and not same_source_event
+            same_stock = (
+                bool(item.get("stock_code"))
+                and item.get("stock_code") == existing.get("stock_code")
+            )
+            shared_number_count = len(current_numbers & prior_numbers)
+            context_compatible = _soft_compatible_fields(
+                item, existing, ("counterparty", "project_name")
+            )
+            context_anchor = _shares_context_anchor(
+                item, existing, ("counterparty", "project_name")
+            )
+            strong_cross_event_duplicate = (
+                not same_source_event
                 and same_announcement
-                and len(current_numbers & prior_numbers) >= 2
-                and summary_similarity >= 0.5
+                and same_stock
+                and context_compatible
+                and (
+                    (
+                        shared_number_count >= 2
+                        and summary_similarity >= (0.85 if same_category else 0.5)
+                        and (
+                            not same_category
+                            or context_anchor
+                            or overlap >= 0.25
+                            or containment >= 0.5
+                        )
+                    )
+                    or (
+                        overlap >= 0.5
+                        and summary_similarity >= 0.6
+                    )
+                )
             )
             amount_value_compatible = not (
                 item_value is not None
@@ -334,28 +424,25 @@ def dedupe_opportunities(items: list[dict], summary_ratio: float = 0.85, evidenc
                 and (
                     amount_type_compatible
                     or (
-                        strong_cross_category_duplicate
+                        strong_cross_event_duplicate
                         and item_value is not None
                         and prior_value is not None
                         and _same_numeric_value(item_value, prior_value)
                     )
                 )
             )
-            context_compatible = _compatible_fields(
-                item, existing, ("counterparty", "project_name")
-            )
             summary_has_shared_fact = (
                 same_summary
                 and _has_shared_numeric_anchor(current_numbers, prior_numbers)
             )
-            if not same_source_event and not strong_cross_category_duplicate:
+            if not same_source_event and not strong_cross_event_duplicate:
                 continue
-            if not same_category and not strong_cross_category_duplicate:
+            if not same_category and not strong_cross_event_duplicate:
                 continue
             if amount_compatible and context_compatible and (
                 overlap >= evidence_overlap
                 or summary_has_shared_fact
-                or strong_cross_category_duplicate
+                or strong_cross_event_duplicate
             ):
                 duplicate = existing
                 break

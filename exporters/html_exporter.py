@@ -68,7 +68,7 @@ tr:nth-child(even){background:#f8fafc}
 <tr>
 <td><strong>{{ o.company_name }}</strong><br>{{ o.category }}{% if o.subcategory %} / {{ o.subcategory }}{% endif %}</td>
 <td>{{ o.event_summary }}</td>
-<td><strong>暂未识别明确切入点</strong><br>{{ o.analysis_summary or '未提供分析说明' }}{% if o.pending_verification %}<br>待核实：{{ o.pending_verification|join('；') }}{% endif %}</td>
+<td><strong>暂未识别明确切入点</strong>{% if o.analysis_conflict %}<br><strong>重复分析结论有分歧，需人工复核。</strong>{% endif %}<br>{{ o.analysis_summary or '未提供分析说明' }}{% if o.pending_verification %}<br>待核实：{{ o.pending_verification|join('；') }}{% endif %}</td>
 <td>{% set source_url = safe_https_url(o.source_url) %}{% if source_url %}<a href="{{ source_url }}" rel="noopener noreferrer">查看原文</a>{% else %}原文链接不可用{% endif %}
 {% if o.related_announcement_ids %}<br><span class="muted">可能关联公告：{{ o.related_announcement_ids|join('、') }}</span>{% endif %}</td>
 </tr>{% endfor %}

@@ -14,6 +14,8 @@ MVP 验收后，营销分析范围由采购、投资并购、融资新增、增�
 
 同一公告内，事件拆解和商机生成需要识别摘要、证据及关键事实重叠；仅在有较强事实锚点时合并，不能因金额或泛化用语相同就合并独立事项。跨公告只标注可能关联的公告编号，不自动合并或删除来源记录。
 
+若被合并的同一事项出现相互矛盾的商机判断，记录 `analysis_conflict=true`，按保守原则暂不计为商机，并标记部分完成及人工复核事项，不保留多个互相矛盾的商机行。
+
 Excel 面向业务人员的列名使用中文，内部 JSON/API 字段名保持不变。导出需覆盖交易对手、项目名称、其他披露金额、关联公告编号和分析状态等可用字段；未提供的细分项显示“未细分”，金额等事实字段不得猜测补齐。
 
 ## 企业输入增补（2026-11-11）
@@ -134,6 +136,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
   "event_summary":"...", "amount":{"value":1000000000,"currency":"CNY","type":"项目总投资","original_text":"...","undisclosed":false,"verification_status":"verified"},
   "other_amounts":[], "counterparty":null, "project_name":null, "bank_products":[], "marketing_direction":null,
   "suggested_action":null, "analysis_summary":null, "analysis_outcome":null,
+  "analysis_conflict":false,
   "related_announcement_ids":[],
   "evidence":[{"text":"...","source_page":1}], "pending_verification":["..."],
   "source_url":"https://...", "analysis_status":"completed", "analysis_error":null
@@ -168,6 +171,7 @@ MVP 不包含定时调度、历史补跑、全市场扫描、CRM/权限、商机
 - 一份公告可产生多条商机；重复运行不产生重复公告记录。
 - 七类商机均有分类适配的深度业务分析；无明确切入点与分析失败、旧记录未分析能够区分。
 - 无明确切入点的事项不计入商机数量；Excel 仍在商机明细中导出，并标记“是否商机=否”。
+- 股东个人增持/减持不归为上市公司自身的增值资金需求；重复事件判断冲突时须明确标记并保守处理。
 - 同一公告的重复事项不重复输出，独立事项不被误合并；跨公告仅建立候选关联，不自动合并。
 - XLSX 面向业务人员使用中文列名，并导出已有的交易对手、项目、其他金额和分析状态字段。
 - XLSX 和 HTML 使用同一批 `Opportunity` 数据；空结果、部分失败、下载未就绪均有明确提示。

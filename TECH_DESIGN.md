@@ -159,6 +159,8 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 编排器只将 `opportunity_identified` 计入商机数并写入 `opportunities.json`；`no_clear_entry_point` 单独写入 `non_opportunities.json`，但仍在 Excel 商机明细中导出，通过“是否商机”列标识。老检查点中的字段缺失记录维持兼容，并标为待判定。跨公告的可能关联只生成候选关联编号，不自动合并。
 
+最终去重也比较同一公告中不同事件 ID 的高置信重复项，要求相同股票/公告、摘要和多个金额事实高度吻合，并检查交易对手或项目等上下文；金额冲突、主体冲突时保留独立记录。若合并项的商机判断相互矛盾，设置 `analysis_conflict=true`、状态为 `partial`，暂不计入商机并提示人工复核。
+
 统一 `LLMClient.generate_json(schema, prompt)`：设置超时、最大重试次数和模型名；每次响应先解析 JSON，再执行 Pydantic 校验。响应允许带 Markdown 代码围栏或简短说明文字；结构不符时带着字段错误自动重问一次，仍失败才记录 `LLM_TIMEOUT`、`LLM_INVALID_JSON` 或 `SCHEMA_VALIDATION_FAILED`。
 
 证据校验只忽略排版差异：空白、全角/半角、引号样式、破折号和零宽字符。改写、拼接句子、省略号缩写仍然拒收。拒收后 Agent 会把失败引文回传给模型，要求重新逐字引用一次；第二次仍不通过才把该公告记为分析失败并保留检查点，避免静默接受无法核实的证据。失败详情额外记录 `evidence_preview` 与 `document_chars`，便于判断是模型改写还是正文过长/解析不完整。

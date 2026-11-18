@@ -189,11 +189,13 @@ def test_merges_cross_category_composite_duplicate_with_multiple_shared_facts():
     )
     first.update(
         announcement_id="same-announcement",
+        stock_code="000010",
         amount={"value": 0.95, "type": "股票收盘价", "currency": "CNY"},
         _source_event_id="e1",
     )
     second.update(
         announcement_id="same-announcement",
+        stock_code="000010",
         amount={"value": 0.95, "type": "股价", "currency": "CNY"},
         _source_event_id="e2",
     )
@@ -202,6 +204,82 @@ def test_merges_cross_category_composite_duplicate_with_multiple_shared_facts():
 
     assert len(kept) == 1
     assert len(kept[0]["evidence"]) == 3
+
+
+def test_merges_repeated_same_category_events_and_resolves_outcome_conflict_conservatively():
+    first = item(
+        "o1",
+        "第一大股东及一致行动人计划在公告披露后6个月内增持公司股份，合计金额不低于5000万元且不超过8000万元。",
+        ["计划增持公司股份，合计金额不低于5000万元且不超过8000万元。"],
+        value=50000000,
+        category="增值类",
+    )
+    second = item(
+        "o2",
+        "公司第一大股东及一致行动人计划自公告披露之日起6个月内增持公司股份，合计增持金额不低于5000万元且不超过8000万元。",
+        ["本次增持金额不低于人民币5000万元且不超过8000万元。"],
+        value=50000000,
+        category="增值类",
+    )
+    first.update(
+        announcement_id="same-announcement",
+        stock_code="000010",
+        counterparty="深圳宝立盛实业发展合伙企业（有限合伙）、郑财",
+        amount={"value": 50000000, "type": "增持金额下限", "currency": "CNY"},
+        _source_event_id="e1",
+        analysis_outcome="opportunity_identified",
+        bank_products=["现金管理"],
+        marketing_direction="股东增持资金存管",
+        suggested_action="联系客户",
+    )
+    second.update(
+        announcement_id="same-announcement",
+        stock_code="000010",
+        counterparty="深圳宝立盛实业发展合伙企业（有限合伙）及郑财",
+        amount={"value": 50000000, "type": "增持金额下限", "currency": "CNY"},
+        _source_event_id="e2",
+        analysis_outcome="no_clear_entry_point",
+        analysis_summary="未披露上市公司自身资金管理安排。",
+    )
+
+    kept = dedupe_opportunities([first, second])
+
+    assert len(kept) == 1
+    assert kept[0]["analysis_outcome"] == "no_clear_entry_point"
+    assert kept[0]["analysis_conflict"] is True
+    assert kept[0]["analysis_status"] == "partial"
+    assert kept[0]["bank_products"] == []
+    assert any("重复事件" in value for value in kept[0]["pending_verification"])
+
+
+def test_does_not_merge_same_announcement_amounts_for_different_counterparties():
+    first = item(
+        "o1",
+        "公司签订设备采购合同，合同金额100万元。",
+        ["公司与甲方签订设备采购合同，合同金额100万元。"],
+        value=1000000,
+        category="采购类",
+    )
+    second = item(
+        "o2",
+        "公司签订设备采购合同，合同金额100万元。",
+        ["公司与乙方签订设备采购合同，合同金额100万元。"],
+        value=1000000,
+        category="采购类",
+    )
+    for entry, event_id, counterparty in (
+        (first, "e1", "甲方设备有限公司"),
+        (second, "e2", "乙方制造有限公司"),
+    ):
+        entry.update(
+            announcement_id="same-announcement",
+            stock_code="000001",
+            counterparty=counterparty,
+            amount={"value": 1000000, "type": "合同金额", "currency": "CNY"},
+            _source_event_id=event_id,
+        )
+
+    assert len(dedupe_opportunities([first, second])) == 2
 
 
 def test_keeps_same_summary_opportunities_from_different_categories():

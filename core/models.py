@@ -147,6 +147,7 @@ class Opportunity(BaseModel):
     suggested_action: str | None = None
     analysis_summary: str | None = None
     analysis_outcome: Literal["opportunity_identified", "no_clear_entry_point"] | None = None
+    analysis_conflict: bool = False
     related_announcement_ids: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     pending_verification: list[str] = Field(default_factory=list)
