@@ -11,6 +11,9 @@ def test_export_empty_reports(tmp_path: Path):
     html = export_html([], scan, tmp_path / "r.html")
     assert load_workbook(xlsx).sheetnames == ["商机明细", "扫描概览"]
     assert load_workbook(xlsx)["商机明细"]["A1"].value == "商机编号"
+    assert "本次没有可展示的分析记录" in load_workbook(xlsx)[
+        "商机明细"
+    ]["A2"].value
     assert "没有识别到商机" in html.read_text(encoding="utf-8")
 
 def test_html_preserves_zero_amount(tmp_path: Path):

@@ -146,7 +146,7 @@ def test_reports_show_analysis_outcome_and_summary(tmp_path):
             [opportunity], scan, tmp_path / "analysis-outcome.xlsx"
         )
     )
-    excluded = workbook["未形成商机"]
+    excluded = workbook["商机明细"]
     headers = [cell.value for cell in excluded[1]]
     values = dict(zip(headers, [cell.value for cell in excluded[2]]))
     assert values["切入点判断"] == "暂未识别明确切入点"
@@ -201,7 +201,7 @@ def test_excel_uses_chinese_headers_and_exports_available_opportunity_fields(tmp
     assert values["可能关联公告编号"] == "ann-related"
 
 
-def test_non_opportunities_are_exported_separately_and_excluded_from_count(tmp_path):
+def test_non_opportunities_are_exported_in_detail_with_opportunity_flag(tmp_path):
     scan = Scan(
         scan_id="excluded-items",
         companies=[Company(stock_code="000001", company_name="A")],
@@ -233,8 +233,16 @@ def test_non_opportunities_are_exported_separately_and_excluded_from_count(tmp_p
     )
 
     assert scan.counts.opportunities == 0
-    assert workbook.sheetnames == ["商机明细", "未形成商机", "扫描概览"]
-    assert workbook["未形成商机"].max_row == 2
+    assert workbook.sheetnames == ["商机明细", "扫描概览"]
+    headers = [cell.value for cell in workbook["商机明细"][1]]
+    values = dict(
+        zip(
+            headers,
+            [cell.value for cell in workbook["商机明细"][2]],
+        )
+    )
+    assert values["是否商机"] == "否"
+    assert values["分析结论"] == no_clear.analysis_summary
     html = export_html(
         [],
         scan,

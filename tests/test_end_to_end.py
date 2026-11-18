@@ -99,6 +99,11 @@ def test_successful_marketing_analysis_without_a_clear_entry_point_is_explicit(t
     workbook = load_workbook(
         tmp_path / "reports" / scan.scan_id / "report.xlsx"
     )
-    assert workbook.sheetnames == ["商机明细", "未形成商机", "扫描概览"]
-    assert workbook["商机明细"].max_row == 1
-    assert workbook["未形成商机"].max_row == 3
+    assert workbook.sheetnames == ["商机明细", "扫描概览"]
+    assert workbook["商机明细"].max_row == 3
+    headers = [cell.value for cell in workbook["商机明细"][1]]
+    is_opportunity_column = headers.index("是否商机") + 1
+    assert all(
+        workbook["商机明细"].cell(row, is_opportunity_column).value == "否"
+        for row in (2, 3)
+    )
