@@ -1,6 +1,8 @@
 import json
 from datetime import date
 from pathlib import Path
+
+from openpyxl import load_workbook
 from core.models import Company, DateRange, Announcement, Event, EventExtractionResult, OpportunityDraft, MarketingAnalysis
 from core.scanner import ScanOrchestrator
 
@@ -33,11 +35,15 @@ def test_end_to_end_multiple_events_and_undisclosed_amount(tmp_path: Path):
     scan = runner.create([Company(stock_code="1", company_name="A")], DateRange(start_date=date(2026,11,1), end_date=date(2026,11,6)))
     runner.run_collection(scan.scan_id)
     runner.prepare_analysis(scan.scan_id)
-    runner.run_agents(scan.scan_id, MultiEventAgent(), DraftAgent(), Marketing())
+    result_scan = runner.run_agents(
+        scan.scan_id, MultiEventAgent(), DraftAgent(), Marketing()
+    )
     result = json.loads((tmp_path / "results" / scan.scan_id / "opportunities.json").read_text(encoding="utf-8"))
     assert len(result["items"]) == 2
     assert result["items"][0]["amount"]["value"] is None
     assert result["items"][0]["analysis_outcome"] == "opportunity_identified"
+    assert result_scan.counts.opportunities == 2
+    assert result_scan.counts.non_opportunities == 0
     completed = runner.run_export(scan.scan_id)
     assert completed.status == "completed"
     assert (tmp_path / "reports" / scan.scan_id / "report.xlsx").exists()
@@ -65,13 +71,34 @@ def test_successful_marketing_analysis_without_a_clear_entry_point_is_explicit(t
     )
     runner.run_collection(scan.scan_id)
     runner.prepare_analysis(scan.scan_id)
-    runner.run_agents(scan.scan_id, MultiEventAgent(), DraftAgent(), NoClearEntry())
+    result_scan = runner.run_agents(
+        scan.scan_id, MultiEventAgent(), DraftAgent(), NoClearEntry()
+    )
 
     result = json.loads(
         (tmp_path / "results" / scan.scan_id / "opportunities.json").read_text(
             encoding="utf-8"
         )
     )
-    assert result["items"][0]["analysis_outcome"] == "no_clear_entry_point"
-    assert "暂未识别" in result["items"][0]["analysis_summary"]
-    assert result["items"][0]["bank_products"] == []
+    excluded = json.loads(
+        (
+            tmp_path
+            / "results"
+            / scan.scan_id
+            / "non_opportunities.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert result["items"] == []
+    assert len(excluded["items"]) == 2
+    assert excluded["items"][0]["analysis_outcome"] == "no_clear_entry_point"
+    assert "暂未识别" in excluded["items"][0]["analysis_summary"]
+    assert excluded["items"][0]["bank_products"] == []
+    assert result_scan.counts.opportunities == 0
+    assert result_scan.counts.non_opportunities == 2
+    runner.run_export(scan.scan_id)
+    workbook = load_workbook(
+        tmp_path / "reports" / scan.scan_id / "report.xlsx"
+    )
+    assert workbook.sheetnames == ["商机明细", "未形成商机", "扫描概览"]
+    assert workbook["商机明细"].max_row == 1
+    assert workbook["未形成商机"].max_row == 3

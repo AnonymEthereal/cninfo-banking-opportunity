@@ -26,6 +26,7 @@ tr:nth-child(even){background:#f8fafc}
 <div class="stats">
 <div class="stat">公告 {{ scan.counts.announcements }}</div>
 <div class="stat">商机 {{ scan.counts.opportunities }}</div>
+<div class="stat">未形成商机 {{ scan.counts.non_opportunities }}</div>
 <div class="stat">采集失败 {{ scan.counts.collection_failed }}</div>
 <div class="stat">解析失败 {{ scan.counts.document_failed }}</div>
 <div class="stat">分析失败 {{ scan.counts.analysis_failed }}</div>
@@ -59,6 +60,20 @@ tr:nth-child(even){background:#f8fafc}
 </td></tr>{% endfor %}
 </tbody></table>
 {% endif %}
+{% if non_opportunities %}
+<h2>未形成商机的事项</h2>
+<p class="muted">以下事项已完成分析，但当前没有明确的银行业务切入点；不计入商机数量。</p>
+<table><thead><tr><th>公司/类别</th><th>事项</th><th>分析原因</th><th>来源</th></tr></thead><tbody>
+{% for o in non_opportunities %}
+<tr>
+<td><strong>{{ o.company_name }}</strong><br>{{ o.category }}{% if o.subcategory %} / {{ o.subcategory }}{% endif %}</td>
+<td>{{ o.event_summary }}</td>
+<td><strong>暂未识别明确切入点</strong><br>{{ o.analysis_summary or '未提供分析说明' }}{% if o.pending_verification %}<br>待核实：{{ o.pending_verification|join('；') }}{% endif %}</td>
+<td>{% set source_url = safe_https_url(o.source_url) %}{% if source_url %}<a href="{{ source_url }}" rel="noopener noreferrer">查看原文</a>{% else %}原文链接不可用{% endif %}
+{% if o.related_announcement_ids %}<br><span class="muted">可能关联公告：{{ o.related_announcement_ids|join('、') }}</span>{% endif %}</td>
+</tr>{% endfor %}
+</tbody></table>
+{% endif %}
 {% if scan.errors %}
 <h2>异常明细</h2><ul>
 {% for e in scan.errors %}
@@ -69,10 +84,29 @@ tr:nth-child(even){background:#f8fafc}
 </html>"""
 
 
-def export_html(opportunities, scan, path: Path, lease_guard=None):
+def export_html(
+    opportunities,
+    scan,
+    path: Path,
+    lease_guard=None,
+    non_opportunities=None,
+):
     if lease_guard is not None:
         lease_guard.assert_owned()
     path.parent.mkdir(parents=True, exist_ok=True)
+    opportunity_items = []
+    excluded_items = list(non_opportunities or [])
+    for item in opportunities or []:
+        if item.analysis_outcome == "no_clear_entry_point":
+            excluded_items.append(item)
+        else:
+            opportunity_items.append(item)
+    opportunities = list(
+        {item.opportunity_id: item for item in opportunity_items}.values()
+    )
+    non_opportunities = list(
+        {item.opportunity_id: item for item in excluded_items}.values()
+    )
     category_counts = {}
     for opportunity in opportunities:
         category_counts[opportunity.category] = (
@@ -81,6 +115,7 @@ def export_html(opportunities, scan, path: Path, lease_guard=None):
     content = Environment(autoescape=True).from_string(TEMPLATE).render(
         opportunities=opportunities,
         scan=scan,
+        non_opportunities=non_opportunities,
         category_counts=category_counts,
         safe_https_url=safe_https_url,
     )

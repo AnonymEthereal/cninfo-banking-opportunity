@@ -135,7 +135,11 @@ class TaskManager:
                     archive = self.orchestrator.root / 'results' / scan_id / 'history' / uuid4().hex
                     archive.mkdir(parents=True, exist_ok=True)
                     source = self.orchestrator.root / 'results' / scan_id
-                    for filename in ('announcements.json', 'opportunities.json'):
+                    for filename in (
+                        'announcements.json',
+                        'opportunities.json',
+                        'non_opportunities.json',
+                    ):
                         if (source / filename).exists():
                             lease_guard.assert_owned()
                             shutil.copy2(source / filename, archive / filename)

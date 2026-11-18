@@ -315,6 +315,7 @@ class AppService:
         scan.progress.completed = 0
         scan.progress.total = scan.counts.announcements
         scan.counts.opportunities = 0
+        scan.counts.non_opportunities = 0
         scan.counts.analysis_failed = 0
         scan.errors = [error for error in scan.errors if error.scope != "analysis"]
         self.orchestrator.save(scan)
@@ -496,7 +497,13 @@ class AppService:
 
     def _opportunities(self, scan_id: str) -> list[Opportunity]:
         items = self._read_items(self._scan_dir(scan_id) / "opportunities.json", Opportunity)
-        return list({item.opportunity_id: item for item in items}.values())
+        return list(
+            {
+                item.opportunity_id: item
+                for item in items
+                if item.analysis_outcome != "no_clear_entry_point"
+            }.values()
+        )
 
     def _archive_analysis(self, scan_id: str) -> None:
         """Move previous analysis checkpoints aside before switching modes.
@@ -507,7 +514,7 @@ class AppService:
         folder = self._scan_dir(scan_id)
         archive = folder / "history" / uuid4().hex
         archive.mkdir(parents=True, exist_ok=True)
-        for name in ("scan.json", "opportunities.json"):
+        for name in ("scan.json", "opportunities.json", "non_opportunities.json"):
             source = folder / name
             if source.exists():
                 shutil.copy2(source, archive / name)

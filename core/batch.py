@@ -6,7 +6,7 @@ from time import monotonic
 from pydantic import BaseModel
 
 from .deadline import deadline, remaining
-from .dedup import dedupe_events, dedupe_opportunities
+from .dedup import dedupe_events, dedupe_opportunities, link_related_disclosures
 from .errors import RuntimeLeaseLostError
 from .evidence import preview
 from .models import Announcement, EventExtractionResult, OpportunityDraft, MarketingAnalysis, Opportunity, ScanError
@@ -174,11 +174,33 @@ def run_batch(
         now = monotonic()
         if not force and now - last_persist < 2:
             return
-        items = {o['opportunity_id']: o for r in records.values() for o in r['items']}
-        runner._write_json(folder / 'opportunities.json', {'items': list(items.values())})
+        all_items = {
+            o['opportunity_id']: o
+            for r in records.values()
+            for o in r['items']
+        }
+        all_items = link_related_disclosures(list(all_items.values()))
+        opportunities = {
+            item['opportunity_id']: item
+            for item in all_items
+            if item.get('analysis_outcome') != 'no_clear_entry_point'
+        }
+        non_opportunities = {
+            item['opportunity_id']: item
+            for item in all_items
+            if item.get('analysis_outcome') == 'no_clear_entry_point'
+        }
+        runner._write_json(
+            folder / 'opportunities.json', {'items': list(opportunities.values())}
+        )
+        runner._write_json(
+            folder / 'non_opportunities.json',
+            {'items': list(non_opportunities.values())},
+        )
         scan.errors = baseline + [ScanError(scope='analysis', announcement_id=k, code=r['code'], message='公告分析失败；已保存检查点。', details={'stage': r.get('stage', 'agents'), 'error_type': r.get('error_type', 'TimeoutError' if r['code'] == 'TASK_TIMEOUT' else 'Unknown'), 'error_message': r.get('error_message', ''), 'announcement_budget_seconds': seconds, 'batch_budget_seconds': task_seconds, 'action': _analysis_action(r['code']), **({'evidence_preview': r['evidence_preview']} if r.get('evidence_preview') else {}), **({'document_chars': r['document_chars']} if r.get('document_chars') else {})}) for k,r in records.items() if r['status']=='failed']
         scan.counts.analysis_failed = sum(r['status']=='failed' for r in records.values())
-        scan.counts.opportunities = len(items)
+        scan.counts.opportunities = len(opportunities)
+        scan.counts.non_opportunities = len(non_opportunities)
         scan.progress.completed = len(records)
         scan.progress.stage = 'agents'
         runner._save(scan)

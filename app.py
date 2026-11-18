@@ -365,6 +365,12 @@ def render_opportunity_detail(item) -> None:
                 st.write(f"· {evidence.text}{suffix}")
         st.markdown(f"**待核实**：{'；'.join(item.pending_verification) or '无'}")
         st.caption(f"公告 ID：{item.announcement_id} · 商机 ID：{item.opportunity_id}")
+        if item.related_announcement_ids:
+            st.caption(
+                "可能关联公告："
+                + "、".join(item.related_announcement_ids)
+                + "（候选关联，未自动合并）"
+            )
         source_url = safe_https_url(item.source_url)
         if source_url:
             st.link_button("查看公告原文", source_url)
@@ -478,6 +484,11 @@ def render_empty_opportunities(scan) -> None:
         st.error("任务失败，请查看下方异常信息。")
     elif scan.errors:
         st.warning("当前没有商机结果，但任务存在异常，不能判断为无商机。")
+    elif scan.counts.non_opportunities:
+        st.info(
+            f"本次没有明确商机；另有 {scan.counts.non_opportunities} 条已分析事项，"
+            "详情见下载的 Excel 报告。"
+        )
     else:
         st.info("本次分析未识别到商机。可以扩大企业或日期范围后重新扫描。")
 
@@ -679,11 +690,12 @@ def render_scan_body(scan_id: str, auto_refresh: bool = False) -> None:
         + scan.counts.document_failed
         + scan.counts.analysis_failed
     )
-    metrics = st.columns(4)
+    metrics = st.columns(5)
     metrics[0].metric("企业", scan.counts.companies)
     metrics[1].metric("公告", scan.counts.announcements)
     metrics[2].metric("商机", scan.counts.opportunities)
-    metrics[3].metric("异常", failures)
+    metrics[3].metric("未形成商机", scan.counts.non_opportunities)
+    metrics[4].metric("异常", failures)
     if failures:
         st.caption(
             f"采集失败 {scan.counts.collection_failed} · 正文解析失败 "

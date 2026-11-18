@@ -1,4 +1,9 @@
-from core.dedup import dedupe_events, dedupe_opportunities, normalize_text
+from core.dedup import (
+    dedupe_events,
+    dedupe_opportunities,
+    link_related_disclosures,
+    normalize_text,
+)
 from core.models import Event, Evidence
 
 
@@ -34,7 +39,77 @@ def test_duplicate_keeps_worth_analyzing_and_richer_evidence():
     kept = dedupe_events([first, second])
     assert len(kept) == 1
     assert kept[0].worth_analyzing is True
-    assert len(kept[0].evidence) == 2
+    assert len(kept[0].evidence) == 3
+
+
+def test_merges_composite_event_with_overlapping_core_risk_and_keeps_all_evidence():
+    price_fact = "公司股票收盘价为0.95元/股，低于1元面值。"
+    risk_fact = "公司股票可能因股价低于面值被终止上市。"
+    first = make_event(
+        "e1",
+        "公司股票低于面值，触及退市风险提示义务。",
+        [price_fact],
+    )
+    second = make_event(
+        "e2",
+        "公司股票低于面值并存在被终止上市的风险，同时披露审计意见。",
+        [price_fact, risk_fact],
+    )
+
+    kept = dedupe_events([first, second])
+
+    assert len(kept) == 1
+    assert {item.text for item in kept[0].evidence} == {price_fact, risk_fact}
+
+
+def test_related_disclosures_are_linked_without_merging_source_records():
+    first = {
+        "opportunity_id": "o1",
+        "announcement_id": "a1",
+        "stock_code": "000001",
+        "publish_date": "2026-11-17",
+        "category": "其他类",
+        "subcategory": "续聘会计师事务所",
+        "event_summary": "公司拟续聘会计师事务所担任年度审计机构。",
+    }
+    second = {
+        "opportunity_id": "o2",
+        "announcement_id": "a2",
+        "stock_code": "000001",
+        "publish_date": "2026-11-18",
+        "category": "其他类",
+        "subcategory": "续聘会计师事务所",
+        "event_summary": "董事会同意续聘会计师事务所担任年度审计机构。",
+    }
+
+    linked = link_related_disclosures([first, second])
+
+    assert len(linked) == 2
+    assert linked[0]["related_announcement_ids"] == ["a2"]
+    assert linked[1]["related_announcement_ids"] == ["a1"]
+
+
+def test_related_disclosure_linking_does_not_link_unrelated_subcategories():
+    first = {
+        "opportunity_id": "o1",
+        "announcement_id": "a1",
+        "stock_code": "000001",
+        "publish_date": "2026-11-17",
+        "category": "其他类",
+        "subcategory": "续聘会计师事务所",
+        "event_summary": "公司拟续聘会计师事务所担任年度审计机构。",
+    }
+    second = {
+        **first,
+        "opportunity_id": "o2",
+        "announcement_id": "a2",
+        "subcategory": "高管任免",
+    }
+
+    linked = link_related_disclosures([first, second])
+
+    assert linked[0]["related_announcement_ids"] == []
+    assert linked[1]["related_announcement_ids"] == []
 
 
 def test_keeps_similar_generic_summaries_with_different_counterparties():
@@ -94,6 +169,39 @@ def test_keeps_cross_category_opportunities_sharing_evidence():
     second = item("o2", "评级机构评定本期债券信用等级为AAA。", [quote], category="报告类")
     kept = dedupe_opportunities([first, second])
     assert [entry["opportunity_id"] for entry in kept] == ["o1", "o2"]
+
+
+def test_merges_cross_category_composite_duplicate_with_multiple_shared_facts():
+    first = item(
+        "o1",
+        "公司股票收盘价0.95元/股，低于1元面值，存在被终止上市的风险。",
+        ["公司股票收盘价为0.95元/股，低于1元面值。"],
+        value=0.95,
+        category="报告类",
+    )
+    second = item(
+        "o2",
+        "公司股票收盘价为0.95元/股，低于1元，存在因股价低于面值被终止上市的风险；"
+        "公司审计报告被出具无法表示意见。",
+        ["收盘价0.95元/股", "低于1元"],
+        value=0.95,
+        category="其他类",
+    )
+    first.update(
+        announcement_id="same-announcement",
+        amount={"value": 0.95, "type": "股票收盘价", "currency": "CNY"},
+        _source_event_id="e1",
+    )
+    second.update(
+        announcement_id="same-announcement",
+        amount={"value": 0.95, "type": "股价", "currency": "CNY"},
+        _source_event_id="e2",
+    )
+
+    kept = dedupe_opportunities([first, second])
+
+    assert len(kept) == 1
+    assert len(kept[0]["evidence"]) == 3
 
 
 def test_keeps_same_summary_opportunities_from_different_categories():
