@@ -220,6 +220,8 @@ def test_non_opportunities_are_exported_in_detail_with_opportunity_flag(tmp_path
         event_summary="召开股东会",
         source_url="https://example.com/ann",
         analysis_outcome="no_clear_entry_point",
+        analysis_conflict=True,
+        analysis_status="partial",
         analysis_summary="程序性公告，没有明确业务切入点。",
     )
     scan.counts.non_opportunities = 1
@@ -242,6 +244,8 @@ def test_non_opportunities_are_exported_in_detail_with_opportunity_flag(tmp_path
         )
     )
     assert values["是否商机"] == "否"
+    assert values["分析结论有分歧"] == "是"
+    assert values["分析处理状态"] == "部分完成"
     assert values["分析结论"] == no_clear.analysis_summary
     html = export_html(
         [],
@@ -251,3 +255,4 @@ def test_non_opportunities_are_exported_in_detail_with_opportunity_flag(tmp_path
     ).read_text(encoding="utf-8")
     assert "未形成商机的事项" in html
     assert "程序性公告" in html
+    assert "重复分析结论有分歧" in html

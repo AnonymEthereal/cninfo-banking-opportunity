@@ -25,6 +25,7 @@ HEADERS = [
     "金额核验状态",
     "切入点判断",
     "是否商机",
+    "分析结论有分歧",
     "分析结论",
     "潜在银行产品",
     "营销方向",
@@ -118,6 +119,7 @@ def _row(opportunity) -> list:
         verification,
         _ANALYSIS_OUTCOMES.get(data.get("analysis_outcome"), ""),
         _IS_OPPORTUNITY.get(data.get("analysis_outcome"), "待判定"),
+        "是" if data.get("analysis_conflict") else "否",
         data.get("analysis_summary"),
         "、".join(data.get("bank_products") or []),
         data.get("marketing_direction"),
@@ -171,8 +173,8 @@ def _style_detail_sheet(ws, opportunities) -> None:
     widths = {
         1: 24, 2: 24, 3: 12, 4: 18, 5: 36, 6: 14, 7: 16, 8: 18,
         9: 44, 10: 16, 11: 16, 12: 20, 13: 18, 14: 22, 15: 22, 16: 14,
-        17: 48, 18: 30, 19: 36, 20: 36, 21: 52, 22: 44, 23: 52, 24: 24,
-        25: 28, 26: 48, 27: 28, 28: 18, 29: 36,
+        17: 14, 18: 48, 19: 30, 20: 36, 21: 36, 22: 52, 23: 44, 24: 52,
+        25: 24, 26: 28, 27: 48, 28: 28, 29: 18, 30: 36,
     }
     for index, width in widths.items():
         ws.column_dimensions[get_column_letter(index)].width = width

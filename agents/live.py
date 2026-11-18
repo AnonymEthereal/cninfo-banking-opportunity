@@ -12,6 +12,29 @@ from core.models import EventExtractionResult, MarketingAnalysis, OpportunityDra
 
 CATEGORIES = {"采购类", "销售类", "投资并购类", "融资新增类", "增值类", "报告类", "其他类"}
 
+
+def _is_shareholder_equity_action(text: str) -> bool:
+    stakeholder_terms = (
+        "股东",
+        "一致行动人",
+        "董事",
+        "监事",
+        "高管",
+        "员工持股",
+    )
+    equity_action_terms = (
+        "增持",
+        "减持",
+        "买入",
+        "卖出",
+        "股份转让",
+        "股票转让",
+    )
+    return any(term in text for term in stakeholder_terms) and any(
+        term in text for term in equity_action_terms
+    )
+
+
 MARKETING_GUIDANCE = {
     "采购类": (
         "围绕采购标的、付款安排、交付周期和交易对手分析。只有公告支持时，考虑设备或项目融资、"
@@ -30,8 +53,10 @@ MARKETING_GUIDANCE = {
         "融资结构、债务接续、银团、担保和结算；不得把授信额度写成已提款金额或新增融资需求。"
     ),
     "增值类": (
-        "围绕披露资金规模、可用期限、流动性约束和资金管理安排分析。只有证据支持时，考虑存款、"
-        "现金管理或适配的资金增值产品；不得假定资金可自由支配或推断未披露的闲置资金。"
+        "只分析上市公司自身明确披露的闲置资金、理财、结构性存款或资金管理，并核实可用期限和流动性约束。"
+        "股东、董事或一致行动人"
+        "个人增持/减持股份，不是上市公司自有资金增值需求，不得据此推荐公司存款或现金管理产品。"
+        "不得假定资金可自由支配或推断未披露的闲置资金。"
     ),
     "报告类": (
         "只基于本事件和证据中明确披露的经营、财务变化分析可能的结算、现金管理或融资服务切入点。"
@@ -39,7 +64,8 @@ MARKETING_GUIDANCE = {
     ),
     "其他类": (
         "结合事件类型判断是否存在具体银行业务切入点，例如新设子公司的账户、资本金及结算安排。"
-        "股东或高管变化本身不代表银行需求；没有明确依据时应如实给出暂未识别到切入点。"
+        "股东或高管个人持股变化本身不代表上市公司银行需求；只有公告明确披露公司层面的账户、资金、"
+        "结算或融资安排时才提出产品建议，否则应给出暂未识别到切入点。"
     ),
 }
 
@@ -212,6 +238,8 @@ class LiveClassifyAgent:
     def analyze(self, event, text):
         prompt = (
             "Classify this event into 采购类、销售类、投资并购类、融资新增类、增值类、报告类、其他类. "
+            "增值类仅指上市公司自身的闲置资金管理、理财或存款安排。大股东、董事、高管或一致行动人"
+            "个人增持/减持上市公司股份应归为其他类，不能视为上市公司自身的资金增值需求。"
             "Every evidence.text and amount.original_text must be a verbatim contiguous source quote, "
             "not a summary. Preserve punctuation. Normalize disclosed monetary values to base currency "
             "units (for example, 1亿元 = 100000000 元). Set currency only when the source supports it; "
@@ -231,6 +259,15 @@ class LiveClassifyAgent:
             if result.category not in CATEGORIES:
                 raise EvidenceError("UNKNOWN_CATEGORY")
             check_evidence(result.evidence, matcher)
+            shareholder_event = " ".join(
+                [result.event_summary, *(item.text for item in result.evidence)]
+            )
+            if (
+                result.category == "增值类"
+                and _is_shareholder_equity_action(shareholder_event)
+            ):
+                result.category = "其他类"
+                result.subcategory = result.subcategory or "股东增持或减持"
             result.event_id = event.event_id
             for amount in [result.amount, *result.other_amounts]:
                 if (

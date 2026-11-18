@@ -354,6 +354,10 @@ def render_opportunity_detail(item) -> None:
         st.markdown(
             f"**跟进建议**：{item.suggested_action or ('暂无明确跟进动作' if no_clear_entry else '待补充')}"
         )
+        if item.analysis_conflict:
+            st.warning(
+                "同一事项的重复分析结论存在分歧；已按保守原则暂不计为商机，请人工复核。"
+            )
         if no_clear_entry:
             st.info(item.analysis_summary or "基于目前披露，暂未识别出明确的银行业务切入点。")
         elif item.analysis_summary:

@@ -425,3 +425,27 @@ def test_marketing_agent_runs_category_specific_analysis(category, guidance):
     assert guidance in client.prompt
     assert category in client.prompt
     assert "PRIVATE_SENTINEL" not in client.prompt
+
+
+def test_shareholder_stock_increase_is_not_classified_as_company_value_management():
+    from agents.live import LiveClassifyAgent
+    from core.models import Event, OpportunityDraft
+
+    quote = "第一大股东及一致行动人计划增持公司股份，金额不低于5000万元。"
+
+    class Client:
+        def generate_json(self, prompt, schema):
+            return OpportunityDraft(
+                category="增值类",
+                event_summary="第一大股东计划增持公司股份。",
+                amount={"value": None, "undisclosed": True, "type": "增持金额"},
+                evidence=[Evidence(text=quote)],
+            )
+
+    result = LiveClassifyAgent(Client()).analyze(
+        Event(event_id="e1", summary=quote, evidence=[Evidence(text=quote)]),
+        quote,
+    )
+
+    assert result.category == "其他类"
+    assert result.subcategory == "股东增持或减持"
