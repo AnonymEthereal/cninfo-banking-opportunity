@@ -157,7 +157,7 @@ def parse(document_path: Path, content_type: str) -> ParsedDocument: ...
 
 七类均执行分类适配的深度提示词，分别指导采购、销售、投资并购、融资新增、增值、报告和其他事件的业务分析。Agent 输出 `analysis_summary` 及 `analysis_outcome`（`opportunity_identified | no_clear_entry_point`）；无明确切入点时不强行推荐产品。报告类只分析事件及公告明确披露的信息，本轮不实现完整的 16 项财务指标分析。营销阶段只接收结构化事件、金额与原文证据，不重复发送整篇公告。所有推断写入营销字段，不得写入事实字段。
 
-编排器只将 `opportunity_identified` 写入 `opportunities.json` 和商机计数；`no_clear_entry_point` 单独写入 `non_opportunities.json`，供报告复核但不作为营销线索。老检查点中的字段缺失记录维持兼容。跨公告的可能关联只生成候选关联编号，不自动合并。
+编排器只将 `opportunity_identified` 计入商机数并写入 `opportunities.json`；`no_clear_entry_point` 单独写入 `non_opportunities.json`，但仍在 Excel 商机明细中导出，通过“是否商机”列标识。老检查点中的字段缺失记录维持兼容，并标为待判定。跨公告的可能关联只生成候选关联编号，不自动合并。
 
 统一 `LLMClient.generate_json(schema, prompt)`：设置超时、最大重试次数和模型名；每次响应先解析 JSON，再执行 Pydantic 校验。响应允许带 Markdown 代码围栏或简短说明文字；结构不符时带着字段错误自动重问一次，仍失败才记录 `LLM_TIMEOUT`、`LLM_INVALID_JSON` 或 `SCHEMA_VALIDATION_FAILED`。
 

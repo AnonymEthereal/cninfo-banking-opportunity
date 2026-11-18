@@ -24,6 +24,7 @@ HEADERS = [
     "金额是否未披露",
     "金额核验状态",
     "切入点判断",
+    "是否商机",
     "分析结论",
     "潜在银行产品",
     "营销方向",
@@ -42,6 +43,10 @@ HEADERS = [
 _ANALYSIS_OUTCOMES = {
     "opportunity_identified": "已识别切入点",
     "no_clear_entry_point": "暂未识别明确切入点",
+}
+_IS_OPPORTUNITY = {
+    "opportunity_identified": "是",
+    "no_clear_entry_point": "否",
 }
 _ANALYSIS_STATUSES = {
     "completed": "完成",
@@ -112,6 +117,7 @@ def _row(opportunity) -> list:
         ),
         verification,
         _ANALYSIS_OUTCOMES.get(data.get("analysis_outcome"), ""),
+        _IS_OPPORTUNITY.get(data.get("analysis_outcome"), "待判定"),
         data.get("analysis_summary"),
         "、".join(data.get("bank_products") or []),
         data.get("marketing_direction"),
@@ -136,7 +142,27 @@ def _style_detail_sheet(ws, opportunities) -> None:
     ws.freeze_panes = "A2"
     for opportunity in opportunities:
         ws.append(_row(opportunity))
-    ws.auto_filter.ref = ws.dimensions
+    if opportunities:
+        ws.auto_filter.ref = ws.dimensions
+    else:
+        ws.merge_cells(
+            start_row=2,
+            start_column=1,
+            end_row=2,
+            end_column=len(HEADERS),
+        )
+        message = ws.cell(
+            row=2,
+            column=1,
+            value=(
+                "本次没有可展示的分析记录；请结合“扫描概览”和“异常明细”，"
+                "确认是未识别到商机、无可分析事项还是处理失败。"
+            ),
+        )
+        message.alignment = Alignment(vertical="center", wrap_text=True)
+        message.font = Font(color="666666", italic=True)
+        ws.row_dimensions[2].height = 32
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}1"
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
@@ -144,9 +170,9 @@ def _style_detail_sheet(ws, opportunities) -> None:
                 cell.data_type = "s"
     widths = {
         1: 24, 2: 24, 3: 12, 4: 18, 5: 36, 6: 14, 7: 16, 8: 18,
-        9: 44, 10: 16, 11: 16, 12: 20, 13: 18, 14: 22, 15: 22, 16: 48,
-        17: 30, 18: 36, 19: 36, 20: 52, 21: 44, 22: 52, 23: 24, 24: 28,
-        25: 48, 26: 28, 27: 18, 28: 36,
+        9: 44, 10: 16, 11: 16, 12: 20, 13: 18, 14: 22, 15: 22, 16: 14,
+        17: 48, 18: 30, 19: 36, 20: 36, 21: 52, 22: 44, 23: 52, 24: 24,
+        25: 28, 26: 48, 27: 28, 28: 18, 29: 36,
     }
     for index, width in widths.items():
         ws.column_dimensions[get_column_letter(index)].width = width
@@ -161,31 +187,14 @@ def export_xlsx(
 ):
     if lease_guard is not None:
         lease_guard.assert_owned()
-    opportunity_items = []
-    excluded_items = list(non_opportunities or [])
-    for item in opportunities or []:
-        if item.analysis_outcome == "no_clear_entry_point":
-            excluded_items.append(item)
-        else:
-            opportunity_items.append(item)
+    all_items = list(opportunities or []) + list(non_opportunities or [])
     opportunities = list(
-        {
-            item.opportunity_id: item for item in opportunity_items
-        }.values()
-    )
-    non_opportunities = list(
-        {
-            item.opportunity_id: item for item in excluded_items
-        }.values()
+        {item.opportunity_id: item for item in all_items}.values()
     )
     wb = Workbook()
     ws = wb.active
     ws.title = "商机明细"
     _style_detail_sheet(ws, opportunities)
-
-    if non_opportunities:
-        excluded = wb.create_sheet("未形成商机")
-        _style_detail_sheet(excluded, non_opportunities)
 
     summary = wb.create_sheet("扫描概览")
     summary.append(["字段", "值"])
